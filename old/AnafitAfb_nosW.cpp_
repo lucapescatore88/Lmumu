@@ -1,0 +1,334 @@
+#include "ReadTree_comp.hpp"
+#include "multi_analyser.hpp"
+#include "Lb_cuts.hpp"
+#include "RooAbsReal.h"
+#include "RooSimultaneous.h"
+#include "RooGenericPdf.h"
+#include "TGraphErrors.h"
+#include "TGraphAsymmErrors.h"
+#include "TROOT.h"
+#include "FeldmanCousins.hpp"
+#include "RooKeysPdf.h"
+#include "functions.hpp"
+#include "fitfunc.hpp"
+
+using namespace RooFit;
+using namespace std;
+
+
+int main(int argc, char **argv)
+{
+	bool printeff = true;
+	string fc = "none";
+	int dobin = -1;
+	int gradbkg = 0;
+
+	gROOT->ProcessLine(".x lhcbStyle.C");
+
+	if(argc > 1)
+	{
+		for(int a = 1; a < argc; a++)
+		{
+			string arg = argv[a];
+			string str = arg.substr(2,arg.length()-2);
+
+			if(arg.find("-E")!=string::npos) fc = str;
+			if(arg=="-peff") printeff = true;
+			if(arg.find("-B")!=string::npos) dobin = ((TString)str).Atof();
+			if(arg.find("-g")!=string::npos) gradbkg = ((TString)str).Atof();
+		}
+	}
+
+	int start = 0;
+	int nbins = 6;//CutsDef::nq2bins;
+	if(dobin != -1) { start = dobin; nbins = dobin+1; }	
+	double q2min[] = {8 ,15.,11.0,15,16,18};//&CutsDef::q2min_highfirst[0];
+	double q2max[] = {11,20.,12.5,16,18,20};//&CutsDef::q2max_highfirst[0];
+
+	TString datafilename = "/afs/cern.ch/work/p/pluca/Lmumu/weighted/candLb.root";
+	TreeReader * data = new TreeReader("candLb2Lmumu");
+	data->AddFile(datafilename);
+	TreeReader * datajpsi = new TreeReader("candLb2JpsiL");
+	datajpsi->AddFile(datafilename);
+
+	TFile * histFile = new TFile("Afb_hist.root","recreate");
+
+	string options = "-quiet-noPlot-lin-stdAxis-XM(#Lambda#mu#mu) (MeV/c^{2})-noCost-noParams";
+	Analysis::SetPrintLevel("s");
+
+	RooRealVar * cosThetaL = new RooRealVar("cosThetaL","cosThetaL",0.,-1.,1.);
+	RooRealVar * cosThetaB = new RooRealVar("cosThetaB","cosThetaB",0.,-1.,1.);
+	RooRealVar * MM = new RooRealVar("Lb_MassConsLambda","Lb_MassConsLambda",5621.,5400.,6000.);
+	double range[2] = { 5550, 5700 };
+	MM->setRange("Signal",range[0],range[1]);
+	RooMsgService::instance().setGlobalKillBelow(RooFit::ERROR);
+
+	TGraphAsymmErrors * Afb_vs_q2 = new TGraphAsymmErrors();
+	TGraphAsymmErrors * AfbB_vs_q2 = new TGraphAsymmErrors();
+	TGraphAsymmErrors * fL_vs_q2 = new TGraphAsymmErrors();
+	TCanvas * ceff = new TCanvas();
+
+	RooCategory * samples = new RooCategory("samples","samples");
+	samples->defineType("DD");
+	samples->defineType("LL");
+
+	RooRealVar * afb = new RooRealVar("afb","afb",0.,-0.75,0.75);
+	RooRealVar * fL = new RooRealVar("fL","fL",0.6,0.,1.);
+	RooRealVar * origafb = new RooRealVar("afb","afb",0.,-0.75,0.75);
+	RooRealVar * origfL = new RooRealVar("fL","fL",0.6,0.,1.);
+	TString afbLpdf = "((3./8.)*(1.-fL)*(1 + TMath::Power(cosThetaL,2)) + afb*cosThetaL + (3./4.)*fL*(1 - TMath::Power(cosThetaL,2)))";
+	RooRealVar * afbB = new RooRealVar("afbB","afbB",-0.3,-0.5,0.);
+	RooRealVar * origafbB = new RooRealVar("afbB","afbB",-0.3,-0.5,0.);
+	TString afbBpdf = "(1 + 2*afbB*cosThetaB)";
+	RooAbsPdf * teoPdf = new RooGenericPdf("teoPdf",afbLpdf,RooArgSet(*cosThetaL,*afb,*fL));
+	RooAbsPdf * teoPdfB = new RooGenericPdf("teoPdfB",afbBpdf,RooArgSet(*cosThetaB,*afbB));
+
+	TreeReader * mydata = datajpsi;
+	Str2VarMap jpsiParsLL = getPars(MM, "LL", CutsDef::LLcut, histFile);
+	Str2VarMap jpsiParsDD = getPars(MM, "DD", CutsDef::DDcut, histFile);
+	
+	//RooAbsPdf * bkgLL = NULL, * bkgLLB = NULL, * bkgDD = NULL, * bkgDDB = NULL;
+ 	//buildBkgPdfs(8,11,"LL",CutsDef::LLcut,&bkgLL,&bkgLLB);
+	//buildBkgPdfs(8,11,"DD",CutsDef::DDcut,&bkgDD,&bkgDDB);
+
+
+	for(int i = start; i < nbins; i++)
+	{
+		TString q2name = ((TString)Form("q2_%4.2f_%4.2f",q2min[i],q2max[i])).ReplaceAll(".","");
+		if(q2min[i] == 8 && q2max[i] == 11) q2name = "jpsi";
+		else mydata = data;
+		
+		TString curq2cut = Form("TMath::Power(J_psi_1S_MM/1000,2) >= %e && TMath::Power(J_psi_1S_MM/1000,2) < %e",q2min[i],q2max[i]);	
+		
+		cout << "------------------- q2 bin: " << q2min[i] << " - " << q2max[i] << " -----------------------" << endl;
+
+		/**               GET AND FIT EFFICIENCIES                  **/
+
+		RooAbsPdf * effDDpdf = NULL, * effLLpdf = NULL, * effLLBpdf = NULL, * effDDBpdf = NULL;	
+		getEfficiencies(q2min[i],q2max[i],&effLLpdf,&effDDpdf,&effLLBpdf,&effDDBpdf,printeff);
+		cout << "Efficiencies extracted" << endl;
+		histFile->cd();
+
+
+		/**                    FIT AFB                  **/
+
+
+		afb->setVal(0);
+		afbB->setVal(-0.3);
+		fL->setVal(0.6);
+
+		RooAbsPdf * corrPdfLL = new RooProdPdf("sigPdfLL"+q2name,"corrPdfLL",*teoPdf,*effLLpdf);
+		RooAbsPdf * corrPdfDD = new RooProdPdf("sigPdfDD"+q2name,"corrPdfDD",*teoPdf,*effDDpdf);
+		RooAbsPdf * corrPdfLLB = new RooProdPdf("sigPdfLLB"+q2name,"corrPdfLLB",*teoPdfB,*effLLBpdf);
+		RooAbsPdf * corrPdfDDB = new RooProdPdf("sigPdfDDB"+q2name,"corrPdfDDB",*teoPdfB,*effDDBpdf);
+
+		TCut baseCut = "";
+		TCut cutLL = CutsDef::LLcut + (TCut)curq2cut + baseCut;
+		TCut cutDD = CutsDef::DDcut + (TCut)curq2cut + baseCut;
+
+		histFile->cd();
+		double fracDDv[2], fracLLv[2];
+		RooDataSet * dataLL = getDataAndFrac("LL",q2name,mydata,range,cutLL,MM,fracLLv,NULL,jpsiParsLL);
+		RooDataSet * dataDD = getDataAndFrac("DD",q2name,mydata,range,cutDD,MM,fracDDv,NULL,jpsiParsDD);
+
+		RooRealVar * fracLL = new RooRealVar("fracLL","fracLL",fracLLv[0],0.05,0.95);
+		RooRealVar * fracDD = new RooRealVar("fracDD","fracDD",fracDDv[0],0.05,0.95);
+
+		//RooAbsPdf * bkgLL = NULL, * bkgLLB = NULL, * bkgDD = NULL, * bkgDDB = NULL;
+		//buildBkgPdfs(q2min[i],q2max[i],"LL",CutsDef::LLcut,&bkgLL,&bkgLLB);
+		//buildBkgPdfs(q2min[i],q2max[i],"DD",CutsDef::DDcut,&bkgDD,&bkgDDB);
+		
+		string bkgmodel = Form("Poly%i-v0-l2",gradbkg);
+		RooAbsPdf * bkgLL_teo = stringToPdf(bkgmodel.c_str(),"bkgLL_teo", cosThetaL);
+		RooAbsPdf * bkgLLB_teo = stringToPdf(bkgmodel.c_str(),"bkgLLB_teo", cosThetaB);
+		RooAbsPdf * bkgDD_teo = stringToPdf(bkgmodel.c_str(),"bkgDD_teo", cosThetaL); 
+		RooAbsPdf * bkgDDB_teo = stringToPdf(bkgmodel.c_str(),"bkgDDB_teo", cosThetaB);
+		RooAbsPdf * bkgLL = new RooProdPdf("bkgLL","",*bkgLL_teo,*effLLpdf);
+		RooAbsPdf * bkgDD = new RooProdPdf("bkgDD","",*bkgDD_teo,*effDDpdf);
+		RooAbsPdf * bkgLLB = new RooProdPdf("bkgLLB","",*bkgLLB_teo,*effLLBpdf);
+		RooAbsPdf * bkgDDB = new RooProdPdf("bkgDDB","",*bkgDDB_teo,*effDDBpdf);
+		
+
+		cout << "Backgrounds extracted" << endl;
+
+		RooGaussian * f_cost_LL = new RooGaussian("f_cost_LL","fLL",*fracLL,RooConst(fracLLv[0]),RooConst(fracLLv[1]));
+		RooGaussian * f_cost_DD = new RooGaussian("f_cost_DD","fDD",*fracDD,RooConst(fracDDv[0]),RooConst(fracDDv[1]));	
+		RooArgSet * cons = new RooArgSet(*f_cost_LL,*f_cost_DD);
+
+		RooAbsPdf * modelLL = new RooAddPdf("modelLL","modelLL",RooArgSet(*corrPdfLL,*bkgLL),*fracLL);
+		RooAbsPdf * modelDD = new RooAddPdf("modelDD","modelDD",RooArgSet(*corrPdfDD,*bkgDD),*fracDD);
+		RooAbsPdf * modelLLB = new RooAddPdf("modelLLB","modelLLB",RooArgSet(*corrPdfLLB,*bkgLLB),*fracLL);
+		RooAbsPdf * modelDDB = new RooAddPdf("modelDDB","modelDDB",RooArgSet(*corrPdfDDB,*bkgDDB),*fracDD);
+
+		// CREATE COMBINED DATASET
+		RooDataSet * combData = new RooDataSet(Form("combData_%i",i),"combined data",
+				RooArgSet(*MM,*cosThetaL,*cosThetaB),Index(*samples),Import("DD",*dataDD),Import("LL",*dataLL));
+
+
+		// FIT COS LEPTON
+		RooSimultaneous * combModel = new RooSimultaneous(Form("combModel_%i",i),"",*samples);
+		combModel->addPdf(*modelLL,"LL");
+		combModel->addPdf(*modelDD,"DD");
+
+		Str2VarMap params;
+		params["fL"] = fL;
+		params["afb"] = afb;	
+		Str2VarMap paramsB;
+		paramsB["afbB"] = afbB;
+
+		RooFitResult * res = safeFit(combModel,combData,params,&isInAllowedArea,"-scan-fast",getNFreePars(combModel,RooArgSet(*cosThetaL)),cons);
+			
+		int nbinsLL = 8;
+		int nbinsDD = 12;
+		if(q2name=="jpsi") { nbinsLL = 40; nbinsDD = 40; }
+
+		ceff->cd();
+		string opts = "-noCost-plotSigComp-fillBkg";
+		if(q2name=="jpsi") opts += "-layout[0.65,0.99,0.60]";
+		GetFrame(cosThetaL,modelLL,dataLL,opts,nbinsLL,NULL,0,"cos#theta_{l}")->Draw();
+		ceff->Print("Afb_LL_"+q2name+".pdf");
+		GetFrame(cosThetaL,modelDD,dataDD,opts,nbinsDD,NULL,0,"cos#theta_{l}")->Draw();
+		ceff->Print("Afb_DD_"+q2name+".pdf");
+	
+		Afb_vs_q2->SetPoint(i,(q2max[i] + q2min[i])/2.,afb->getVal());
+		fL_vs_q2->SetPoint(i,(q2max[i] + q2min[i])/2.,fL->getVal());
+
+		// FIT COS HADRON
+		RooSimultaneous * combModelB = new RooSimultaneous(Form("combModelB_%i",i),"",*samples);
+		combModelB->addPdf(*modelLLB,"LL");
+		combModelB->addPdf(*modelDDB,"DD");
+
+		//RooFitResult * resB = combModelB->fitTo(*combData,Save());
+		RooFitResult * resB = safeFit(combModelB,combData,paramsB,&isInAllowedAreaB,"-scan-fast",getNFreePars(combModelB,RooArgSet(*cosThetaB)),cons);
+		
+		ceff->cd();
+		GetFrame(cosThetaB,modelLLB,dataLL,"-noCost-plotSigComp-fillBkg",nbinsLL,NULL,0,"cos#theta_{#Lambda}")->Draw();
+		ceff->Print("AfbB_LL_"+q2name+".pdf");
+		GetFrame(cosThetaB,modelDDB,dataDD,"-noCost-plotSigComp-fillBkg",nbinsDD,NULL,0,"cos#theta_{#Lambda}")->Draw();
+		ceff->Print("AfbB_DD_"+q2name+".pdf");
+			
+		AfbB_vs_q2->SetPoint(i,(q2max[i] + q2min[i])/2.,afbB->getVal());
+
+		cout << endl << fixed << setprecision(6) << "AfbB = " << afbB->getVal() << " +/- " << afbB->getError() << endl;
+		cout << "Afb = " << afb->getVal() << " +/- " << afb->getError() << endl;
+		cout << "fL = " << fL->getVal() << " +/- " << fL->getError() << endl;
+		cout << endl;
+		if(res) cout << "lepton:  " << res->edm() << "   "  << res->covQual() << endl;
+		if(resB) cout << "baryon:  " << resB->edm() << "   "  << resB->covQual() << endl;
+		cout << endl;
+
+
+		if(fc!="none")
+		{ 
+			cout << "------------------------ FELDMAN AND COUSINS ------------------------" << endl;
+
+			histFile = new TFile("Afb_hist.root","recreate");
+
+			vector<double> afb_err(0,2), fL_err(0,2), afbB_err(0,2);
+			vector < RooDataSet * > datas;
+			vector < RooAbsPdf * > pdfs, pdfsB;
+			vector < TString > cat;
+			cat.push_back("LL");
+			cat.push_back("DD");
+			datas.push_back(dataLL);
+			datas.push_back(dataDD);
+
+			RooArgSet * origPars = new RooArgSet(*origafb,*origfL);
+			pdfs.push_back(modelLL);
+			pdfs.push_back(modelDD);
+
+			//double fLval = fL->getVal(), fLerr = fL->getError();
+			//double afbval = afb->getVal();
+			double afbBval = afbB->getVal();
+
+			if(fc == "all" || fc == "afb")
+			{
+				FeldmanCousins * FC = new FeldmanCousins(q2name,cat,datas,pdfs,cosThetaL,params);
+				FC->AddConstraints(cons);
+				FC->SetFitFunc(&safeFit);
+				FC->SetNExp(100);
+				TGraph * best = NULL;
+				TH2F * contours = FC->ExtractLimits(params,origPars,-0.3,0.3,0.2,1,&isInAllowedArea,best,"-scan-fast");
+				best->Write("bestfit");
+				contours->Write("pvalue_grid");
+			}
+
+			double lims[6][2] = { {-0.5,-0.2}, {-0.47,-0.2}, {-0.49,-0.2}, {-0.4,0.1}, {-0.5,-0.2}, {-0.43,0.} };
+			if(fc == "all" || fc == "afbB")
+			{
+				RooArgSet * origParsB = new RooArgSet(*origafbB);
+				pdfsB.push_back(modelLLB);
+				pdfsB.push_back(modelDDB);
+				FeldmanCousins * FCB = new FeldmanCousins(q2name,cat,datas,pdfsB,cosThetaB,paramsB);
+				FCB->AddConstraints(cons);
+				FCB->SetFitFunc(&safeFit);
+				FCB->SetNExp(200);
+				FCB->SetNPointsToScan(15);
+				afbB_err = FCB->ExtractLimits(paramsB,origParsB,lims[i][0],lims[i][1],&isInAllowedAreaB,"-scan-fast");
+				AfbB_vs_q2->SetPointError(i,(q2max[i] - q2min[i])/2.,(q2max[i] - q2min[i])/2.,TMath::Abs(afbB_err[0]-afbBval),TMath::Abs(afbB_err[1]-afbBval));
+			}
+		}
+		else
+		{
+			AfbB_vs_q2->SetPointError(i,(q2max[i] - q2min[i])/2.,(q2max[i] - q2min[i])/2.,0,0);
+			Afb_vs_q2->SetPointError(i,(q2max[i] - q2min[i])/2.,(q2max[i] - q2min[i])/2.,0,0);
+			fL_vs_q2->SetPointError(i,(q2max[i] - q2min[i])/2.,(q2max[i] - q2min[i])/2.,0,0);
+		}
+	}
+
+	ceff->cd();
+	Afb_vs_q2->GetXaxis()->SetTitle("q^{2}");
+	Afb_vs_q2->GetYaxis()->SetTitle("A_{FB}^{l}");
+	Afb_vs_q2->SetMaximum(1);
+	Afb_vs_q2->SetMinimum(-1);
+	Afb_vs_q2->Draw("AP");
+	ceff->Print("Afb_vs_q2.pdf");
+	AfbB_vs_q2->GetXaxis()->SetTitle("q^{2}");
+	AfbB_vs_q2->GetYaxis()->SetTitle("A_{FB}^{h}");
+	AfbB_vs_q2->SetMaximum(1);
+	AfbB_vs_q2->SetMinimum(-1);
+	AfbB_vs_q2->Draw("AP");
+	ceff->Print("AfbB_vs_q2.pdf");
+	fL_vs_q2->GetXaxis()->SetTitle("q^{2}");
+	fL_vs_q2->GetYaxis()->SetTitle("f_{L}");
+	fL_vs_q2->Draw("AP");
+	ceff->Print("fL_vs_q2.pdf");
+
+	for(int bb = 0; bb < Afb_vs_q2->GetN(); bb++)
+	{
+		double qq, afbv, afbBv, fLv;
+		Afb_vs_q2->GetPoint(bb,qq,afbv);
+		AfbB_vs_q2->GetPoint(bb,qq,afbBv);
+		fL_vs_q2->GetPoint(bb,qq,fLv);
+		cout << fixed << setprecision(1) << q2min[bb] << " - " << q2max[bb];
+		cout << fixed << setprecision(4); 
+
+		if(fc == "all" || fc == "afb") cout << " & $" << afbv << "_{-" << Afb_vs_q2->GetErrorYlow(bb) << "}^{+" << Afb_vs_q2->GetErrorYhigh(bb)  << "} \\text{(stat)} \\pm \\text{(sys)}$ ";
+		if(fc == "all" || fc == "afbB") cout << " & $" << afbBv << "_{-" << AfbB_vs_q2->GetErrorYlow(bb) << "}^{+" << AfbB_vs_q2->GetErrorYhigh(bb) << "} \\text{(stat)} \\pm \\text{(sys)}$ " ;
+		if(fc == "all" || fc == "fL") cout << " & $" << fLv << "_{-" << fL_vs_q2->GetErrorYlow(bb) << "}^{+" << fL_vs_q2->GetErrorYhigh(bb)  << "} \\text{(stat)} \\pm \\text{(sys)}$ ";
+		if(fc == "none") cout << " & \t" << afbv << " & \t" << afbBv << " & \t" << fLv;
+		cout << "  \\\\ " << endl;
+	}
+
+}
+
+
+/*
+			if(fc == "all" || fc == "afb")
+			{
+				FeldmanCousins * FC = new FeldmanCousins(q2name,cat,datas,pdfs,cosThetaL,afb,"nsig_sw");
+				if(q2min[i]==11) afb_err = FC->ExtractLimits(params,origPars,-0.33,-0.09,&isInAllowedArea);
+				else if( (afb->getVal()-1.4*afb->getError()) > -0.75 && (afb->getVal()+1.4*afb->getError()) < 0.75 )
+					afb_err = FC->ExtractLimits(params,origPars,afb->getVal()-1.4*afb->getError(),afb->getVal()+1.4*afb->getError(),&isInAllowedArea);
+				else afb_err = FC->ExtractLimits(params,origPars,-0.5,0.5,&isInAllowedArea);
+				Afb_vs_q2->SetPointError(i,(q2max[i] - q2min[i])/2.,(q2max[i] - q2min[i])/2.,TMath::Abs(afb_err[0]-afbval),TMath::Abs(afb_err[1]-afbval));
+			}
+			if(fc == "all" || fc == "fL")
+			{
+				FeldmanCousins * FCfL = new FeldmanCousins(q2name,cat,datas,pdfs,cosThetaL,fL,"nsig_sw");
+				if(q2min[i]==11) fL_err = FCfL->ExtractLimits(params,origPars,0.45,0.85,&isInAllowedArea);
+				else fL_err = FCfL->ExtractLimits(params,origPars,fLval-1.5*fLerr,fLval+1.5*fLerr,&isInAllowedArea);
+				fL_vs_q2->SetPointError(i,(q2max[i] - q2min[i])/2.,(q2max[i] - q2min[i])/2.,TMath::Abs(fL_err[0]-fLval),TMath::Abs(fL_err[1]-fLval));
+			}
+*/
+

@@ -1,0 +1,120 @@
+#include "TMath.h"
+#include "TFile.h"
+#include "TTree.h"
+#include "TChain.h"
+#include "TBranch.h"
+#include "TLeaf.h"
+#include "TGraphErrors.h"
+#include "TList.h"
+#include "TF1.h"
+#include "TLorentzVector.h"
+#include "TVector3.h"
+#include "TRandom3.h"
+
+
+#include "general_functions.hpp"
+#include "ReadTree_comp.hpp"
+#include "NBfunctions.hpp"
+
+#include "NeuroBayesExpert.hh"
+
+#include <iostream>
+#include <string>
+#include <cstring>
+
+
+int main(int argc, char** argv)
+{
+	TFile * MCFile = TFile::Open("candLb_MC.root");
+	TTree * JpsiMCTree  = (TTree *)MCFile->Get("candLb2JpsiL");
+	TFile * DataFile = TFile::Open("candLb.root");
+	TTree * JpsiDataTree  = (TTree *)DataFile->Get("candLb2JpsiL");
+	
+	JpsiDataTree->Draw("Lb_MM>>h","pplus_TRACK_Type == 3 && TMath::Abs(J_psi_1S_MM - 3096) < 60");
+	double nDD_data = ((TH1 *) gPad->GetPrimitive("h"))->GetEntries();
+	JpsiDataTree->Draw("Lb_MM>>h1","pplus_TRACK_Type == 5 && TMath::Abs(J_psi_1S_MM - 3096) < 60");
+	double nLL_data = ((TH1 *) gPad->GetPrimitive("h1"))->GetEntries();
+	JpsiMCTree->Draw("Lb_MM>>h2","pplus_TRACK_Type == 3 && TMath::Abs(J_psi_1S_MM - 3096) < 60");
+	double nDD_MC = ((TH1 *) gPad->GetPrimitive("h2"))->GetEntries();
+	JpsiMCTree->Draw("Lb_MM>>h3","pplus_TRACK_Type == 5 && TMath::Abs(J_psi_1S_MM - 3096) < 60");
+	double nLL_MC = ((TH1 *) gPad->GetPrimitive("h3"))->GetEntries();
+
+	double dataRatio = nLL_data / nDD_data;
+	double mcRatio = nLL_MC / nDD_MC;
+	double doubleRatio = dataRatio / mcRatio;
+	double percLL_data = nLL_data / (nLL_data + nDD_data);
+	double percLL_MC = nLL_MC / (nLL_MC + nDD_MC);
+	
+	cout << "Data LL/DD = " << dataRatio << endl;
+	cout << "MC LL/DD = " << mcRatio << endl;
+	cout << "Double ratio data / MC =  " << doubleRatio << endl;
+	cout << "Data LL% = " << percLL_data << " +\\- " << percLL_data*TMath::Sqrt( 1./nLL_data + TMath::Power( (TMath::Sqrt(nLL_data) + TMath::Sqrt(nDD_data)) / (nLL_data + nDD_data) , 2) ) << endl;
+	cout << "MC LL% = " << percLL_MC << " +\\- " << percLL_MC*TMath::Sqrt( 1./nLL_MC + TMath::Power( (TMath::Sqrt(nLL_MC) + TMath::Sqrt(nDD_MC)) / (nLL_MC + nDD_MC) , 2) ) << endl;
+	
+	
+	/*
+	TFile * MCFile = TFile::Open("candLb_MC.root");
+	TTree * JpsiMCTree  = (TTree *)MCFile->Get("candLb2Lmumu");
+	TFile * DataFile = TFile::Open("candLb.root");
+	TTree * JpsiDataTree  = (TTree *)DataFile->Get("candLb2Lmumu");
+	
+	
+	int nbins = 6;
+	double q2min[] = {0.1, 4.0, 6.0, 11.0, 15.0, 18.0};
+	double q2max[] = {4.0, 6.0, 8.0, 12.5, 18.0, 20.0};
+	
+	TGraphErrors * g1 = new TGraphErrors();
+	TGraphErrors * g2 = new TGraphErrors();
+	TGraphErrors * g3 = new TGraphErrors();
+	
+	for(int i = 0; i < nbins; i++)
+	{
+		cout << "Analysing bin " << i+1 << "/" << nbins << "  ( " << q2min[i] << " - " << q2max[i] << " GeV )" << endl;
+		TString curq2cut = Form("TMath::Power(J_psi_1S_MM/1000,2) >= %e && TMath::Power(J_psi_1S_MM/1000,2) < %e",q2min[i],q2max[i]);
+		
+		JpsiDataTree->Draw("Lb_MM>>h","pplus_TRACK_Type == 3" + (TCut)curq2cut);
+		double nDD_data = ((TH1 *) gPad->GetPrimitive("h"))->GetEntries();
+		JpsiDataTree->Draw("Lb_MM>>h1","pplus_TRACK_Type == 5" + (TCut)curq2cut);
+		double nLL_data = ((TH1 *) gPad->GetPrimitive("h1"))->GetEntries();
+		JpsiMCTree->Draw("Lb_MM>>h2","pplus_TRACK_Type == 3" + (TCut)curq2cut);
+		double nDD_MC = ((TH1 *) gPad->GetPrimitive("h2"))->GetEntries();
+		JpsiMCTree->Draw("Lb_MM>>h3","pplus_TRACK_Type == 5" + (TCut)curq2cut);
+		double nLL_MC = ((TH1 *) gPad->GetPrimitive("h3"))->GetEntries();
+
+		double dataRatio = nLL_data / nDD_data;
+		double mcRatio = nLL_MC / nDD_MC;
+		double doubleRatio = dataRatio / mcRatio;
+	
+		cout << "Data LL/DD = " << dataRatio << endl;
+		cout << "MC LL/DD = " << mcRatio << endl;
+		cout << "Double ratio data / MC =  " << doubleRatio << endl;
+		
+		g1->SetPoint(i,(q2min[i] + q2max[i])/2.,dataRatio);
+		g2->SetPoint(i,(q2min[i] + q2max[i])/2.,mcRatio);
+		g3->SetPoint(i,(q2min[i] + q2max[i])/2.,doubleRatio);
+	}
+	
+	TCanvas * cc = new TCanvas();
+	g1->SetTitle("LL/DD data");
+	g2->SetTitle("LL/DD MC");
+	g3->SetTitle("LL/DD data / MC");
+	g1->GetXaxis()->SetTitle("q2");
+	g1->SetMarkerStyle(22);
+	g1->SetMarkerSize(0.9);
+	g1->SetMarkerColor(1);
+	g2->GetXaxis()->SetTitle("q2");
+	g2->SetMarkerStyle(22);
+	g2->SetMarkerSize(0.9);
+	g2->SetMarkerColor(1);
+	g3->GetXaxis()->SetTitle("q2");
+	g3->SetMarkerStyle(22);
+	g3->SetMarkerSize(0.9);
+	g3->SetMarkerColor(1);
+	g1->Draw("AP");
+	cc->Print("DDLLdata.pdf");
+	g2->Draw("AP");
+	cc->Print("DDLLMC.pdf");
+	g3->Draw("AP");
+	cc->Print("DDLLdataOverMC.pdf");
+	*/
+}

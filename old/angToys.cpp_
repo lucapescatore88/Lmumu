@@ -1,0 +1,161 @@
+#include <vector>
+#include <sstream>
+#include <iostream>
+#include <string>
+#include <time.h>
+
+#include "RooRealVar.h"
+#include "RooStats/SPlot.h"
+#include "RooRealVar.h"
+#include "RooGaussian.h"
+#include "RooExponential.h"
+#include "RooCBShape.h"
+#include "RooArgusBG.h"
+#include "RooChebychev.h"
+#include "RooAddPdf.h"
+#include "RooDataHist.h"
+#include "RooHistPdf.h"
+#include "RooDataSet.h"
+#include "RooAbsData.h"
+#include "RooProdPdf.h"
+#include "RooAddition.h"
+#include "RooProduct.h"
+#include "RooArgusBG.h"
+#include "RooKeysPdf.h"
+
+#include "TSystem.h"
+#include "TStyle.h"
+#include "TFile.h"
+#include "TTree.h"
+#include "TH1.h"
+#include "TEntryList.h"
+#include "TCanvas.h"
+#include "TBranch.h"
+#include "TCut.h"
+
+#include "ReadTree_comp.hpp"
+#include "multi_analyser.hpp"
+#include "Lb_cuts.hpp"
+
+int main(int argc, char **argv)
+{
+	TFile * histFile = new TFile("hist.root","recreate");
+
+	bool noprint = false;
+
+	vector< double > asym;
+	unsigned nexp = 100;
+	unsigned nsigGen = 50;
+	double bkgperc = 0.7;
+	int ngen = nsigGen/(1.-bkgperc);
+	double eff_neg = 0.5;
+	double eff_pos = 1.;
+
+	if(argc > 1)
+	{
+		for(int a = 1; a < argc; a++)
+		{
+			string arg = argv[a];
+			string str = arg.substr(2,arg.length()-2);
+
+			if(arg.find("-e")!=string::npos) { nexp = ((TString)str).Atof(); cout << "Performing " << nexp << " experiments" << endl;  }
+			if(arg.find("-a")!=string::npos) { asym.push_back(((TString)str).Atof()); }
+		}
+	}
+
+	if(asym.empty())
+	{
+		asym.push_back(0.);
+		asym.push_back(0.5);
+		asym.push_back(0.8);
+	}
+
+
+	Analysis::SetPrintLevel("no");
+	if(nexp > 1)  noprint = true;
+	TCanvas * c = new TCanvas();
+
+	for(unsigned a = 0; a < asym.size(); a++)
+	{
+		int ntot_real_gen = 2 * nsigGen / ( eff_pos*(1+asym[a]) + eff_neg*(1-asym[a]) );
+
+		TH1F * central = new TH1F(Form("central_%4.2f",asym[a]),"",50,-1,1);
+		TH1F * error = new TH1F(Form("error_%4.2f",asym[a]),"",50,0,0.3);
+		TH2F * ntotVSafb = new TH2F(Form("correl_%4.2f",asym[a]),"",50,0,0.5,50,0,0.5);
+		TH1F * ntotfit = new TH1F(Form("ntot_%i_%4.2f",(int)(ngen*(1.-bkgperc)),asym[a]),"",200,0,0.5);
+		central->SetTitle(Form("Afb ( gen: Afb = %4.2f, N^{tot}_{obs} = %i )",asym[a],nsigGen));
+		error->SetTitle(Form("#Delta Afb ( gen: Afb = %4.2f, N^{tot}_{obs} = %i )",asym[a],nsigGen));
+		ntotVSafb->SetTitle(Form("gen: Afb = %4.2f, N^{tot}_{obs} = %i",asym[a],nsigGen));
+		ntotfit->SetTitle(Form("Ntot ( gen: Afb = %4.2f, N^{tot}_{obs} = %i )",asym[a],nsigGen));
+		central->GetXaxis()->SetTitle("Afb");
+		error->GetXaxis()->SetTitle("#Delta Afb");
+		ntotVSafb->GetYaxis()->SetTitle("Afb (| fit - true |)");
+		ntotVSafb->GetXaxis()->SetTitle("Ntot (| fit - true | / Ntot)");
+		ntotfit->GetXaxis()->SetTitle("Ntot (| fit - true | / Ntot)");
+
+		for(unsigned e = 0; e < nexp; e++)
+		{
+			showPercentage(e,nexp);
+
+			RooRealVar * ntot_real = new RooRealVar("ntot_real","ntot_real",(int)ntot_real_gen,0,1.e4);
+			RooRealVar * afb = new RooRealVar("Afb","Afb",asym[a],-1,1);
+	
+			RooFormulaVar * Npos = new RooFormulaVar("Npos","Npos",Form("%f*0.5*@0*(1+@1)",eff_pos),RooArgList(*ntot_real,*afb));
+			RooFormulaVar * Nneg = new RooFormulaVar("Nneg","Nneg",Form("%f*0.5*@0*(1-@1)",eff_neg),RooArgList(*ntot_real,*afb));
+		//RooRealVar * ntot_obs = new RooRealVar("Ntotobs",Form("%f*@0 + %f*@1",eff_pos,eff_neg),RooArgList(Npos,Nneg));
+
+			RooRealVar * var = new RooRealVar("Lb_MM","Lb_MM",5619,5400,6000);
+		
+			Analysis * posCosL = new Analysis(Form("posCosL_%4.2f",asym[a]),"Lb",var);
+			Analysis * negCosL = new Analysis(Form("negCosL_%4.2f",asym[a]),"Lb",var);
+			posCosL->SetSignal("Gauss-sX17.5",Npos,"-namepar");
+			posCosL->addBkgComponent("exp","Exp-mX-bX0.0022",(int)ngen*bkgperc/2.,"-namepar");
+			negCosL->SetSignal("Gauss-sX17.5",Nneg,"-namepar");
+			negCosL->addBkgComponent("exp","Exp-mX-bX0.0022",(int)ngen*bkgperc/2.,"-namepar");
+			posCosL->Initialize("");
+			negCosL->Initialize("");
+			posCosL->Generate((int)Npos->getVal()+ngen*bkgperc/2.);
+			negCosL->Generate((int)Nneg->getVal()+ngen*bkgperc/2.);
+
+			//afb->setVal(0.);
+			MultiAnalysis * multi = new MultiAnalysis(Form("Angular_%i",e));
+			multi->AddCategory(posCosL,"posCosL");
+			multi->AddCategory(negCosL,"negCosL");	
+	
+			if(noprint) multi->SimultaneousFit(5400.,5900.,30,"-noPlot-noPrint");
+			else multi->SimultaneousFit(5400.,5900.,30,"-lin");
+
+			error->Fill(afb->getError());
+			central->Fill(afb->getVal());
+			ntotfit->Fill(TMath::Abs(ntot_real->getVal()-ntot_real_gen)/(float)ntot_real_gen);
+			ntotVSafb->Fill(TMath::Abs(afb->getVal()-asym[a]), TMath::Abs(ntot_real->getVal()-ntot_real_gen)/(float)ntot_real_gen);
+
+			delete multi;
+		}
+
+		error->Write();
+		central->Write();
+		ntotfit->Write();
+		ntotVSafb->Write();
+		gStyle->SetOptStat("emr");
+		error->Draw();
+		c->Print(((TString)Form("error_%4.2f",asym[a])).ReplaceAll(".","")+".pdf");
+		central->Draw();
+		c->Print(((TString)Form("val_%4.2f",asym[a])).ReplaceAll(".","")+".pdf");
+
+		ntotfit->Draw();
+		c->Print(((TString)Form("ntot_%4.2f",asym[a])).ReplaceAll(".","")+".pdf");
+		gStyle->SetOptStat(0);
+		ntotVSafb->Draw("colz");
+		c->Print(((TString)Form("corr_%4.2f",asym[a])).ReplaceAll(".","")+".pdf");
+		gStyle->SetOptStat("emr");
+		}
+
+	//histFile->Write();
+	histFile->Close();
+	
+	cout << "\nTHE END" << endl;
+	
+	delete histFile;
+	return 0;
+}

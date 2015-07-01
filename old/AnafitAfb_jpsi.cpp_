@@ -1,0 +1,248 @@
+#include "ReadTree_comp.hpp"
+#include "multi_analyser.hpp"
+#include "Lb_cuts.hpp"
+#include "RooAbsReal.h"
+#include "RooSimultaneous.h"
+#include "RooGenericPdf.h"
+#include "TGraphErrors.h"
+#include "TGraphAsymmErrors.h"
+#include "TROOT.h"
+#include "FeldmanCousins.hpp"
+
+using namespace RooFit;
+using namespace std;
+
+
+void getEfficiencies(RooAbsPdf ** effDDpdf, RooAbsPdf ** effLLpdf, RooAbsPdf ** effLLBpdf, RooAbsPdf ** effDDBpdf, bool printeff = false)
+{
+	RooRealVar * cosThetaL = new RooRealVar("cosThetaL","cosThetaL",0.,-1.,1.);
+	RooRealVar * cosThetaB = new RooRealVar("cosThetaB","cosThetaB",0.,-1.,1.);
+
+	TString effbase = "/afs/cern.ch/work/p/pluca/results/";
+	TH1F * effDD, * effLL, * effLLB, * effDDB;
+
+	TFile * effFile = TFile::Open(effbase+"Lbeff_JpsivscosThetaL_DD.root");
+	effDD  = (TH1F *)effFile->Get("htoteff");
+	effFile = TFile::Open(effbase+"Lbeff_JpsivscosThetaL_LL.root");
+	effLL  = (TH1F *)effFile->Get("htoteff");
+	effFile = TFile::Open(effbase+"Lbeff_JpsivscosThetaB_DD.root");
+	effDDB  = (TH1F *)effFile->Get("htot_nodet_eff");
+	effFile = TFile::Open(effbase+"Lbeff_JpsivscosThetaB_LL.root");
+	effLLB  = (TH1F *)effFile->Get("htot_nodet_eff");
+
+	TCanvas * mycc = new TCanvas();
+	effLL->Fit("poly2");
+	effLL->Draw();
+	mycc->Print("eff_test.pdf");
+
+	RooDataHist * hLL = new RooDataHist("hLL","hLL",*cosThetaL,effLL);
+	RooDataHist * hDD = new RooDataHist("hDD","hDD",*cosThetaL,effDD);
+	(*effLLpdf) = stringToPdf("Poly2","effLL", cosThetaL);
+	(*effDDpdf) = stringToPdf("Poly2","effDD", cosThetaL);
+	(*effLLpdf)->fitTo(*hLL,PrintLevel(-1));
+	(*effDDpdf)->fitTo(*hDD,PrintLevel(-1));
+	fixParams((*effLLpdf),cosThetaL);
+	fixParams((*effDDpdf),cosThetaL);	
+
+	RooDataHist * hLLB = new RooDataHist("hLLB","hLLB",*cosThetaB,effLLB);
+	RooDataHist * hDDB = new RooDataHist("hDDB","hDDB",*cosThetaB,effDDB);
+	(*effLLBpdf) = stringToPdf("Poly3","bkgLLB", cosThetaB);
+	(*effDDBpdf) = stringToPdf("Poly3","effDDB", cosThetaB);
+	(*effLLBpdf)->fitTo(*hLLB,PrintLevel(-1));
+	(*effDDBpdf)->fitTo(*hDDB,PrintLevel(-1));
+	fixParams((*effLLBpdf),cosThetaB);
+	fixParams((*effDDBpdf),cosThetaB);
+
+	if(printeff)
+	{
+		TCanvas * ceff = new TCanvas();
+		GetFrame(cosThetaL, hLL,(*effLLpdf),"-nochi2",0,NULL,0,"#cos#theta_{L}","Tot. eff.")->Draw();
+		ceff->Print("DDeffFit_jpsi.pdf");
+		GetFrame(cosThetaL, hDD,(*effDDpdf),"-nochi2",0,NULL,0,"#cos#theta_{L}","Tot. eff.")->Draw();
+		ceff->Print("LLeffFit_jpsi.pdf");
+		GetFrame(cosThetaB, hLLB,(*effLLBpdf),"-nochi2",0,NULL,0,"cos#theta_{#Lambda}","Tot. eff.")->Draw();
+		ceff->Print("DDeffFitB_jpsi.pdf");
+		GetFrame(cosThetaB, hDDB,(*effDDBpdf),"-nochi2",0,NULL,0,"cos#theta_{#Lambda}","Tot. eff.")->Draw();
+		ceff->Print("LLeffFitB_jpsi.pdf");
+		delete ceff;
+	}
+}
+
+
+RooDataSet * getJpsisWeight(string type, string model, TFile * file = NULL)
+{
+	RooRealVar * cosThetaL = new RooRealVar("cosThetaL","cosThetaL",0.,-1.,1.);
+	RooRealVar * cosThetaB = new RooRealVar("cosThetaB","cosThetaB",0.,-1.,1.);
+	
+	string candfilename = "/afs/cern.ch/work/p/pluca/weighted/Lmumu/candLb_MC.root";
+	string datafilename = "/afs/cern.ch/work/p/pluca/weighted/Lmumu/candLb.root";
+
+	TFile * MCFile = TFile::Open((TString)candfilename);
+	TTree * BdJpsiKSTree = (TTree *)MCFile->Get("candBdJpsiKS");
+	
+	if(file) file->cd();
+
+	RooRealVar * vLbJpsiCons = new RooRealVar("Lb_MassConsJpsiLambda","Lb_MassConsJpsiLambda",5621.,5300.,6000.);
+	
+	TCut baseCut = CutsDef::cutJpsi;	
+	if(type == "DD") baseCut += CutsDef::DDcut; 
+	else if(type == "LL") baseCut += CutsDef::LLcut; 
+		//baseCut += (TCut)"Lb_MassConsJpsiLambda > 5500";
+		//vLbJpsiCons = new RooRealVar("Lb_MassConsJpsiLambda","Lb_MassConsJpsiLambda",5621.,5500.,6000.); }
+
+	Analysis * KS = new Analysis("KS_bkg"+type,"Lb",BdJpsiKSTree,vLbJpsiCons,"DCB_OST","","-namepar");
+	KS->Fit(5300.,6000.,100,true,"-quiet-noPlot");
+	Str2VarMap pars = KS->GetSigParams();
+	RooRealVar * m_shift = new RooRealVar("m_shift","shift",0.,-5.,5.);
+	setConstant(&pars);
+	ModifyPars(&pars,"m",m_shift,"-shift");
+
+	//Fit Jpsi
+	Analysis * sWjpsi = new Analysis("jpsi"+type+"_sW","Lb","candLb2JpsiL",datafilename,vLbJpsiCons,&baseCut);
+	sWjpsi->AddVariable(cosThetaL);
+	sWjpsi->AddVariable(cosThetaB);
+	
+	RooAbsPdf * jpsiKSpdf = sWjpsi->addBkgComponent("JpsiKS","DCB_OST",1000,"",pars);
+	RooArgList * pdfs = new RooArgList("bkgpdfs");
+	RooArgList * nevts = new RooArgList("nbkgfracs");
+
+	pdfs->add(*jpsiKSpdf);
+	nevts->add(*(new RooRealVar(("fracKS"+type).c_str(),"",0.5,0.,1.)));
+	pdfs->add(*stringToPdf("Exp",("expbkg"+type).c_str(),vLbJpsiCons));
+
+	RooAbsPdf * totbkgpdf = new RooAddPdf(("sWbkg"+type).c_str(),"sWbkg",*pdfs,*nevts);
+	RooDataSet * datasW = sWjpsi->CalcSweight(model.c_str(),totbkgpdf,"print-b100");	
+	RooDataSet * data = sWjpsi->GetDataSet("");
+
+	TCanvas * ceff = new TCanvas();
+	GetFrame(cosThetaL,NULL,datasW,"-nochi2",20,NULL,0,"cos#theta_{L}")->Draw();
+	ceff->Print(("cosThetaL_"+type+"_sWeighted_jpsi.pdf").c_str());
+	GetFrame(cosThetaL,NULL,data,"-nochi2",20,NULL,0,"cos#theta_{L}")->Draw();
+	ceff->Print(("cosThetaL_"+type+"_jpsi.pdf").c_str());
+	delete ceff;
+
+	if(file) file->cd();
+	TTree * tree = (TTree*)datasW->tree();
+	tree->SetName(("treeJpsi"+type).c_str());
+	tree->Write();
+	
+	return datasW;
+}
+
+
+
+
+int main(int argc, char **argv)
+{
+	bool printeff = false;
+	string model = "DCB_Sn-n2";
+	model += (string)"-s[7]";
+	model += (string)"-s2[14]";
+	model += "-a[1.7]-a2[2.8]";
+;
+
+	gROOT->ProcessLine(".x lhcbStyle.C");
+
+	if(argc > 1)
+	{
+		for(int a = 1; a < argc; a++)
+		{
+			string arg = argv[a];
+			string str = arg.substr(2,arg.length()-2);
+
+			if(arg=="-peff") printeff = true;
+		}
+	}
+	
+	TFile * histFile = new TFile("Afb_Jpsi_hist.root","recreate");
+
+	string options = "-quiet-noPlot";
+	Analysis::SetPrintLevel("s");
+
+	RooRealVar * cosThetaL = new RooRealVar("cosThetaL","cosThetaL",0.,-1.,1.);
+	RooRealVar * cosThetaB = new RooRealVar("cosThetaB","cosThetaB",0.,-1.,1.);
+	RooRealVar * nsig_sw = new RooRealVar("nsig_sw","nsig_sw",1,-1.e6,1.e6);
+	RooMsgService::instance().setGlobalKillBelow(RooFit::ERROR);
+
+	RooDataSet * swdataLL = getJpsisWeight("LL",model,histFile);
+	RooDataSet * swdataDD = getJpsisWeight("DD",model,histFile);
+		
+	TCanvas * ceff = new TCanvas();
+
+	RooCategory * samples = new RooCategory("samples","samples");
+	samples->defineType("DD");
+	samples->defineType("LL");
+
+	RooRealVar * afb = new RooRealVar("afb","afb",0.,-100,100);
+	RooRealVar * fL = new RooRealVar("fL","fL",0.7,-1.,10.);
+	TString afbLpdf = "((3./8.)*(1.-fL)*(1 + TMath::Power(cosThetaL,2)) + afb*cosThetaL + (3./4.)*fL*(1 - TMath::Power(cosThetaL,2)))";
+	RooRealVar * afbB = new RooRealVar("afbB","afbB",0.,-100,100);
+	TString afbBpdf = "(1 + 2*afbB*cosThetaB)";
+	RooAbsPdf * teoPdf = new RooGenericPdf("teoPdf",afbLpdf,RooArgSet(*cosThetaL,*afb,*fL));
+	RooAbsPdf * teoPdfB = new RooGenericPdf("teoPdfB",afbBpdf,RooArgSet(*cosThetaB,*afbB));
+
+	TString curq2cut = "";//"(Lb_MassConsLambda > 5680 || Lb_MassConsLambda < 5590)",q2min[i],q2max[i]); 
+	
+	/**               GET AND FIT EFFICIENCIES                  **/
+
+	RooAbsPdf * effDDpdf = NULL, * effLLpdf = NULL, * effLLBpdf = NULL, * effDDBpdf = NULL;	
+	getEfficiencies(&effDDpdf,&effLLpdf,&effLLBpdf,&effDDBpdf,printeff);
+	histFile->cd();
+
+
+	/**                    FIT AFB                  **/
+
+
+	afb->setVal(0);
+	afbB->setVal(0);
+	fL->setVal(0.7);
+
+	RooAbsPdf * corrPdfLL = new RooProdPdf("corrPdfLL","corrPdfLL",*teoPdf,*effLLpdf);
+	RooAbsPdf * corrPdfDD = new RooProdPdf("corrPdfDD","corrPdfDD",*teoPdf,*effDDpdf);
+	RooAbsPdf * corrPdfLLB = new RooProdPdf("corrPdfLLB","corrPdfLLB",*teoPdfB,*effLLBpdf);
+	RooAbsPdf * corrPdfDDB = new RooProdPdf("corrPdfDDB","corrPdfDDB",*teoPdfB,*effDDBpdf);
+
+	TCut cutLL = CutsDef::LLcut + (TCut)curq2cut;
+	TCut cutDD = CutsDef::DDcut + (TCut)curq2cut;
+
+	// CREATE COMBINED DATASET
+	RooDataSet * combData = new RooDataSet("combData","combined data",RooArgSet(*cosThetaL,*cosThetaB,*nsig_sw),Index(*samples),Import("DD",*swdataDD),Import("LL",*swdataLL),WeightVar("nsig_sw"));
+	
+	// FIT COS LEPTON
+	RooSimultaneous * combModel = new RooSimultaneous("combModel","",*samples);
+	combModel->addPdf(*corrPdfLL,"LL");
+	combModel->addPdf(*corrPdfDD,"DD");
+
+	combModel->fitTo(*combData,PrintLevel(-1),Verbose(kFALSE),SumW2Error(kTRUE));
+	//corrPdfDD->fitTo(*swdataDD,PrintLevel(-1),Verbose(kFALSE),SumW2Error(kTRUE));
+	//corrPdfLL->fitTo(*swdataLL,PrintLevel(-1),Verbose(kFALSE),SumW2Error(kTRUE));
+
+	ceff->cd();
+	GetFrame(cosThetaL,corrPdfLL,swdataLL,"-sumW2err-nochi2-noCost",20,NULL,0,"cos#theta_{L}")->Draw();
+	ceff->Print("Afb_LL_jpsi.pdf");
+	GetFrame(cosThetaL,corrPdfDD,swdataDD,"-sumW2err-nochi2-noCost",20,NULL,0,"cos#theta_{L}")->Draw();
+	ceff->Print("Afb_DD_jpsi.pdf");
+
+	// FIT COS HADRON
+	RooSimultaneous * combModelB = new RooSimultaneous("combModelB","",*samples);
+	combModelB->addPdf(*corrPdfLLB,"LL");
+	combModelB->addPdf(*corrPdfDDB,"DD");
+
+	combModelB->fitTo(*combData,PrintLevel(-1),Verbose(kFALSE),SumW2Error(kTRUE));
+	//corrPdfDDB->fitTo(*swdataDD,PrintLevel(-1),Verbose(kFALSE),SumW2Error(kTRUE));
+	//corrPdfLLB->fitTo(*swdataLL,PrintLevel(-1),Verbose(kFALSE),SumW2Error(kTRUE));
+
+	GetFrame(cosThetaB,corrPdfLLB,swdataLL,"-sumW2err-nochi2-noCost",20,NULL,0,"cos#theta_{#Lambda}")->Draw();
+	ceff->Print("AfbB_LL_jpsi.pdf");
+	GetFrame(cosThetaB,corrPdfDDB,swdataDD,"-sumW2err-nochi2-noCost",20,NULL,0,"cos#theta_{#Lambda}")->Draw();
+	ceff->Print("AfbB_DD_jpsi.pdf");
+
+	cout << endl << fixed << setprecision(6) << "AfbB = " << afbB->getVal() << " +/- " << afbB->getError() << endl;
+	cout << "Afb = " << afb->getVal() << " +/- " << afb->getError() << endl;
+	cout << "fL = " << fL->getVal() << " +/- " << fL->getError() << endl;
+	cout << endl;
+
+	delete ceff;
+	histFile->Write();
+	delete histFile;
+}

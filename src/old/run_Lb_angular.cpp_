@@ -1,0 +1,145 @@
+#include <vector>
+#include <sstream>
+#include <iostream>
+#include <string>
+#include <time.h>
+
+#include "RooRealVar.h"
+#include "RooStats/SPlot.h"
+#include "RooDataSet.h"
+#include "RooRealVar.h"
+#include "RooGaussian.h"
+#include "RooExponential.h"
+#include "RooCBShape.h"
+#include "RooArgusBG.h"
+#include "RooChebychev.h"
+#include "RooAddPdf.h"
+#include "RooDataHist.h"
+#include "RooHistPdf.h"
+#include "RooDataSet.h"
+#include "RooAbsData.h"
+#include "RooProdPdf.h"
+#include "RooAddition.h"
+#include "RooProduct.h"
+#include "RooArgusBG.h"
+#include "RooKeysPdf.h"
+#include "RooArgList.h"
+#include "RooPolynomial.h"
+
+#include "TSystem.h"
+#include "TFile.h"
+#include "TTree.h"
+#include "TH1.h"
+#include "TEntryList.h"
+#include "TCanvas.h"
+#include "TBranch.h"
+#include "TCut.h"
+
+#include "general_functions.hpp"
+#include "ReadTree_comp.hpp"
+#include "analyser.hpp"
+#include "Lb_cuts.hpp"
+
+using namespace std;
+using namespace RooFit;
+
+
+int main(int argc, char **argv)
+{
+	string analysis = "Lb2Lmumu";
+	
+	// Set trees of cancdidates previously created
+		
+	TString datafilename = "/afs/cern.ch/user/p/pluca/work/Lb/Lmumu/candLb.root";
+	if(TFile::Open(datafilename)==0) return 1;
+	
+	
+	TreeReader * candTree_LbMuMu_data = new TreeReader("candLb2Lmumu");
+	candTree_LbMuMu_data->AddFile(datafilename);
+	RooRealVar * vLbConsData = new RooRealVar("Lb_MassConsLambda","Lb_MassConsLambda",5620.,5200.,6300.);
+	Analysis * anaLbMuMu_data = new Analysis("Lb2Lmumu_data","Lb",candTree_LbMuMu_data,&CutsDef::cutMuMu,vLbConsData);
+	
+	/*
+	TreeReader * candTree_LbJpsi_data = new TreeReader("candLb2JpsiL");
+	candTree_LbJpsi_data->AddFile(datafilename);
+	RooRealVar * vLbJpsiConsData = new RooRealVar("Lb_MassConsJpsiLambda","Lb_MassConsJpsiLambda",5620.,5500.,5900.);
+	Analysis * anaLbJpsi_data = new Analysis("Lb2JpsiL_data","Lb",candTree_LbJpsi_data,&CutsDef::cutJpsi,vLbJpsiConsData);
+	*/
+	
+	TFile * histFile = new TFile("angular.root","recreate");
+
+	/*
+	TFile * MCFile = TFile::Open("candLb_MC.root");
+	TTree * BdJpsiKSTree  = (TTree *)MCFile->Get("candBdJpsiKS");
+	TTree * jpsiSwapTree = (TTree *)MCFile->Get("candJpsiLSwap");
+        TTree * mumuSwapTree = (TTree *)MCFile->Get("candLmumuSwap");;
+	*/
+	
+	// FIT Lb data
+	
+	TCut cosLcut = "cosThetaL > 0";
+	TCut cosBcut = "cosThetaB > 0";
+		
+	anaLbMuMu_data->SetSignal("Gauss",5623.9,15);
+	
+	anaLbMuMu_data->SetName("Lmumu_posCosThetaL_data");
+	anaLbMuMu_data->Initialize();
+	anaLbMuMu_data->Fit(5400.,6000.,60,true,"-range-ANDpulls-lin", cosLcut);
+	double NposCosL = anaLbMuMu_data->GetSigVal();
+	
+	anaLbMuMu_data->SetName("Lmumu_negCosThetaL_data");
+	anaLbMuMu_data->SetSignal("Gauss",5623.9,12);
+	anaLbMuMu_data->ClearBkgList();
+	anaLbMuMu_data->Initialize();
+	anaLbMuMu_data->Fit(5400.,6000.,60,true,"-range-ANDpulls-lin", !cosLcut);
+	double NnegCosL = anaLbMuMu_data->GetSigVal();
+	
+	
+	anaLbMuMu_data->SetName("Lmumu_posCosLposCosB_data");
+	anaLbMuMu_data->SetSignal("Gauss",5623.9,12);
+	anaLbMuMu_data->ClearBkgList();
+	anaLbMuMu_data->Initialize();
+	anaLbMuMu_data->Fit(5400.,6000.,30,true,"-range-ANDpulls-lin", cosLcut + cosBcut);
+	double NposLposB = anaLbMuMu_data->GetSigVal();
+	
+	anaLbMuMu_data->SetName("Lmumu_posCosLnegCosB_data");
+	anaLbMuMu_data->SetSignal("Gauss",5623.9,12);
+	anaLbMuMu_data->ClearBkgList();
+	anaLbMuMu_data->Initialize();
+	anaLbMuMu_data->Fit(5400.,6000.,30,true,"-range-ANDpulls-lin", cosLcut + !cosBcut);
+	double NposLnegB = anaLbMuMu_data->GetSigVal();
+	
+	anaLbMuMu_data->SetName("Lmumu_negCosLposCosB_data");
+	anaLbMuMu_data->SetSignal("Gauss",5623.9,12);
+	anaLbMuMu_data->ClearBkgList();
+	anaLbMuMu_data->Initialize();
+	anaLbMuMu_data->Fit(5400.,6000.,30,true,"-range-ANDpulls-lin", !cosLcut + cosBcut);
+	double NnegLposB = anaLbMuMu_data->GetSigVal();
+	
+	anaLbMuMu_data->SetName("Lmumu_negCosLnegCosB_data");
+	anaLbMuMu_data->SetSignal("Gauss",5623.9,12);
+	anaLbMuMu_data->ClearBkgList();
+	anaLbMuMu_data->Initialize();
+	anaLbMuMu_data->Fit(5400.,6000.,30,true,"-range-ANDpulls-lin", !cosLcut + !cosBcut);
+	double NnegLnegB = anaLbMuMu_data->GetSigVal();
+	
+	
+	cout << fixed << setprecision(3);
+	cout << "AFB_ThetaL = " << (NposCosL - NnegCosL) / (NposCosL + NnegCosL) << endl;
+	cout << "AFB_ThetaLThetaB = " << (NposLposB + NnegLnegB - NposLnegB - NnegLposB) / (NposLposB + NnegLnegB + NposLnegB + NnegLposB) << endl;
+	
+	//cout << NposCosL << "  " << NnegCosL << endl;
+	//cout << NposLposB << "  " << NnegLnegB << "  " << NposLnegB << "  " << NnegLposB << endl;
+	
+	histFile->Write();
+	histFile->Close();
+	
+	delete histFile;
+	
+	return 0;
+}
+
+
+
+
+

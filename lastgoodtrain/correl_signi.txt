@@ -1,0 +1,27 @@
+
+ total correlation to target:  79.440%
+ total significance:  176.654 sigma
+ (additional signif. , only this var , loss when removed , global corr. to others)
+
+  1.:  variable  15:132.75 132.75  25.15  89.5%    34 #15
+  2.:  variable   2: 75.79 127.85  47.99  56.7%    14 #2
+  3.:  variable   7: 58.52 104.46  29.15  66.2%    14 #7
+  4.:  variable   5: 54.64 110.20  45.05  54.6%    14 #5
+  5.:  variable  16: 17.51  53.60  11.27  82.5%    34 #16
+  6.:  variable   8: 17.38  56.18  12.34  52.3%    14 #8
+  7.:  variable   6: 15.80  91.26   9.61  66.5%    14 #6
+  8.:  variable  14: 12.83  86.45  13.45  72.5%    34 #14
+  9.:  variable   3: 11.53  35.88   9.71  44.2%    14 #3
+ 10.:  variable  18:  6.72  41.18   7.48  97.1%    34 #18
+ 11.:  variable  10:  9.21  47.79   9.39  86.4%    34 #10
+ 12.:  variable  13:  6.14  56.34   5.84  73.9%    34 #13
+ 13.:  variable   9:  6.32  67.07   7.18  58.5%    14 #9
+ 14.:  variable   4:  5.22  63.78   5.01  60.6%    14 #4
+ 15.:  variable  12:  4.38  42.91   4.61  96.2%    34 #12
+ 16.:  variable  17:  3.10  46.59   2.98  89.4%    34 #17
+ 17.:  variable  21:  2.66 119.59   2.67  88.5%    34 #21
+ 18.:  variable  20:  2.08  51.63   2.07  82.5%    34 #20
+ 19.:  variable  11:  0.96  46.41   0.96  86.6%    34 #11
+ 20.:  variable  19:  0.24  66.90   0.24  78.8%    34 #19
+
+ Keep only 15 most significant input variables

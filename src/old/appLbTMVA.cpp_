@@ -1,0 +1,183 @@
+#include "TMVA/Tools.h"
+#include "TMVA/Reader.h"
+
+#include "ReadTree_comp.hpp"
+
+#include "TMath.h"
+#include "TSystem.h"
+#include "TBranch.h"
+#include "TDirectory.h"
+#include "TFile.h"
+#include "TCut.h"
+#include "TEntryList.h"
+
+#include <time.h>
+#include <iostream>
+#include <iomanip>
+#include <string>
+
+#include "analyser.hpp"
+
+using namespace TMVA;
+
+
+int main(int argc, char **argv)
+{
+	string Ana = "Lb";
+	
+	cout << "\nLoading data trees..." << endl;
+	
+	TreeReader* treeReader = new TreeReader("tree");
+	TList * list = new TList;
+	
+	if(argc <= 2)
+	{
+		treeReader->AddFile("rfio:////castor/cern.ch/user/p/pluca/Lmumu/Lb2Lmumu_CL12_MagUp.root");
+		treeReader->AddFile("rfio:////castor/cern.ch/user/p/pluca/Lmumu/Lb2Lmumu_CL12_MagDown.root");
+	}
+	else if(argc > 2)
+	{
+		for(int a = 2; a < argc; a++)
+		{
+			treeReader->AddFile(argv[a]);
+			cout << "Reading: " << argv[a] << endl;
+
+			TFile * f = TFile::Open(argv[a]);
+		
+			TTree * tevt = 0;
+			f->GetObject("EventTuple",tevt);
+			if(tevt == 0)
+				f->GetObject("LumiTuple",tevt);
+		
+			if(tevt != 0)
+			{
+				cout << "Adding " << tevt->GetName() << endl;
+				list->Add(tevt);
+			}
+			cout << "Done" << endl;
+		}
+	}
+
+
+	string outfile = "/afs/cern.ch/work/p/pluca/Lb_CL12_weighted.root";
+	if(argc > 1) outfile = argv[1];
+
+	TFile * out = new TFile(outfile.c_str(),"recreate");
+
+	TTree * lumitree = TTree::MergeTrees(list); 
+	lumitree->Write();
+	
+	TTree* newTree = new TTree("tree","");
+
+	treeReader->Initialize();
+	treeReader->BranchNewTree(newTree);
+	
+
+	float BDTweight;
+	TBranch *b = newTree->GetBranch("BDTweight");
+	if( b == 0 ) 
+	{
+		newTree->Branch("BDTGrad",&BDTweight,"BDTGrad/F");
+	}
+	std::cout << "\nLoading traning data..." << std::endl;
+
+	gSystem->Load("TMVA/lib/libTMVA.1");
+	
+	TMVA::Tools::Instance();
+	TMVA::Reader * TMVAreader = new TMVA::Reader();
+
+	float var[23];
+	
+	TMVAreader->AddVariable( "Lb_MassConsLambda_chi2[0]/Lb_MassConsLambda_nDOF[0]", &var[0] );
+	TMVAreader->AddVariable( "Lb_TAU", &var[1] );
+	
+	TMVAreader->AddVariable( "Lb_P", &var[2] );
+	TMVAreader->AddVariable( "Lb_PT", &var[3] );
+	TMVAreader->AddVariable( "piminus_PT", &var[4] );
+	TMVAreader->AddVariable( "pplus_PT", &var[5] );
+	
+	TMVAreader->AddVariable( "Lb_DIRA_OWNPV", &var[6] );
+	TMVAreader->AddVariable( "Lb_ENDVERTEX_CHI2/Lb_ENDVERTEX_NDOF", &var[7] );
+	TMVAreader->AddVariable( "J_psi_1S_ENDVERTEX_CHI2/J_psi_1S_ENDVERTEX_NDOF", &var[8] );
+	
+	TMVAreader->AddVariable( "Lb_IPCHI2_OWNPV", &var[9] );
+	TMVAreader->AddVariable( "J_psi_1S_IPCHI2_OWNPV", &var[10] );
+	TMVAreader->AddVariable( "pplus_IPCHI2_OWNPV", &var[11] );
+	TMVAreader->AddVariable( "piminus_IPCHI2_OWNPV", &var[12] );
+	TMVAreader->AddVariable( "muminus_IPCHI2_OWNPV", &var[13] );
+	TMVAreader->AddVariable( "muplus_IPCHI2_OWNPV", &var[14] );
+	
+	TMVAreader->AddVariable( "muminus_TRACK_CHI2NDOF", &var[15] );
+	TMVAreader->AddVariable( "muplus_TRACK_CHI2NDOF", &var[16] );
+	TMVAreader->AddVariable( "muminus_PIDmu", &var[17] );
+	TMVAreader->AddVariable( "muplus_PIDmu", &var[18] );
+	
+	TMVAreader->AddVariable( "Lambda0_PT", &var[19] );
+	TMVAreader->AddVariable( "Lambda0_ENDVERTEX_CHI2/Lambda0_ENDVERTEX_NDOF", &var[20] );
+	TMVAreader->AddVariable( "Lambda0_IPCHI2_OWNPV", &var[21] );
+	TMVAreader->AddVariable( "Lambda0_FDCHI2_OWNPV", &var[22] );
+	
+	TMVAreader->BookMVA("BDTGrad", "weights/TMVAClassification_BDTGrad.weights.xml");
+	
+	time_t start = time(NULL);
+	int ntot = treeReader->GetEntries();
+	cout << "\nBeginning analysis\nTot entries = " << ntot << endl;
+	
+	for ( int i = 0; i < ntot; ++i )
+	{
+		showPercentage(i, ntot, start);
+	
+		treeReader->GetEntry(i);
+		
+		var[0] = treeReader->GetValue( "Lb_MassConsLambda_chi2",0) / treeReader->GetValue( "Lb_MassConsLambda_nDOF",0);
+		var[1] = treeReader->GetValue( "Lb_TAU");
+	
+		var[2] = treeReader->GetValue( "Lb_P");
+		var[3] = treeReader->GetValue( "Lb_PT");
+		var[4] = treeReader->GetValue( "piminus_PT");
+		var[5] = treeReader->GetValue( "pplus_PT");
+	
+		var[6] = treeReader->GetValue( "Lb_DIRA_OWNPV");
+	
+		var[7] = treeReader->GetValue( "Lb_ENDVERTEX_CHI2") /  treeReader->GetValue( "Lb_ENDVERTEX_NDOF");
+		var[8] = treeReader->GetValue( "J_psi_1S_ENDVERTEX_CHI2") /  treeReader->GetValue( "J_psi_1S_ENDVERTEX_NDOF");
+	
+		var[9] = treeReader->GetValue( "Lb_IPCHI2_OWNPV");
+		var[10] = treeReader->GetValue( "J_psi_1S_IPCHI2_OWNPV");
+		var[11] = treeReader->GetValue( "pplus_IPCHI2_OWNPV");
+		var[12] = treeReader->GetValue( "piminus_IPCHI2_OWNPV");
+	
+		var[13] = treeReader->GetValue( "muminus_IPCHI2_OWNPV");
+		var[14] = treeReader->GetValue( "muplus_IPCHI2_OWNPV");
+		
+		var[15] = treeReader->GetValue( "muminus_TRACK_CHI2NDOF");
+		var[16] = treeReader->GetValue( "muplus_TRACK_CHI2NDOF");
+	
+		var[17] = treeReader->GetValue( "muminus_PIDmu");
+		var[18] = treeReader->GetValue( "muplus_PIDmu");
+	
+		var[19] = treeReader->GetValue( "Lambda0_PT");
+		var[20] = treeReader->GetValue( "Lambda0_ENDVERTEX_CHI2") /  treeReader->GetValue( "Lambda0_ENDVERTEX_NDOF");
+		var[21] = treeReader->GetValue( "Lambda0_IPCHI2_OWNPV");
+		var[22] = treeReader->GetValue( "Lambda0_FDCHI2_OWNPV");
+
+		BDTweight = (float)TMVAreader->EvaluateMVA("BDTGrad");
+		BDTweight = 0.5*(BDTweight + 1);
+		newTree->Fill();
+	}
+
+	newTree->Write();
+	out->Close();
+
+	time_t end = time(NULL);
+	double dt = difftime(end,start);
+	cout << "It took: " << dt/60. << " min" << std::endl;
+
+	delete TMVAreader;
+
+	return 0;
+}
+
+
+
+

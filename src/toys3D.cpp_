@@ -1,0 +1,458 @@
+#include "ReadTree_comp.hpp"
+#include "multi_analyser.hpp"
+#include "Lb_cuts.hpp"
+#include "RooAbsReal.h"
+#include "RooSimultaneous.h"
+#include "RooGenericPdf.h"
+#include "TGraphErrors.h"
+#include "TGraphAsymmErrors.h"
+#include "TROOT.h"
+#include "FeldmanCousins.hpp"
+#include "RooKeysPdf.h"
+#include "RooStats/FeldmanCousins.h"
+#include "functions.hpp"
+#include "fitfunc.hpp"
+
+
+using namespace RooFit;
+using namespace std;
+
+
+RooFitResult * findMinRandom( RooAbsPdf * pdf, RooDataSet * data, Str2VarMap p, ISVALIDF_PTR isValid, string opt, int nfree, RooArgSet * cons, RooAbsReal * nll = NULL)
+{
+	RooRealVar cosThetaL("cosThetaL","cosThetaL",0.,-1.,1.);
+	RooRealVar cosThetaB("cosThetaB","cosThetaB",0.,-1.,1.);
+	RooRealVar MM("Lb_MassConsLambda","Lb_MassConsLambda",5621.,5540.,5900.);
+	RooArgSet obs(cosThetaL,cosThetaB,MM);
+
+	vector < string > pnames(1,"afb");
+	pnames.push_back("afbB");
+	pnames.push_back("fL");
+	p = GetParams(pdf,obs,pnames);
+
+	bool afb_iscost  = ((RooRealVar*)p["afb"])->getAttribute("Constant");
+	bool fL_iscost   = ((RooRealVar*)p["fL"])->getAttribute("Constant");
+	bool afbB_iscost = ((RooRealVar*)p["afbB"])->getAttribute("Constant");
+	
+	((RooRealVar*)p["afb"])->setConstant();
+	((RooRealVar*)p["afbB"])->setConstant();
+	((RooRealVar*)p["fL"])->setConstant();
+	RooArgSet * nuisances = copyFreePars(pdf,obs);
+	((RooRealVar*)p["afb"])->setConstant(afb_iscost);
+	((RooRealVar*)p["afbB"])->setConstant(afbB_iscost);
+	((RooRealVar*)p["fL"])->setConstant(fL_iscost);
+	
+
+	double precision = 0.001;
+	if(!nll) nll = pdf->createNLL(*data);
+
+	const unsigned np = 200;
+	double a[np], f[np], ab[np];
+	double c[3], r[1] = { 1e6 };
+
+	genPoints(np,a,f,ab);
+	while (r[0] > precision)
+	{
+		scan(pdf,data,nll,p,nfree,opt,cons,np,a,f,ab,c,r,nuisances);
+		genPointsSphere(np,c,r,a,f,ab);
+	}
+	return scan(pdf,data,nll,p,nfree,opt,cons,np,a,f,ab,c,r,nuisances);
+}
+
+
+int main(int argc, char **argv)
+{
+	bool printeff = true;
+	string bkgmodel = "Poly0-l2-v0";
+	//int type = 0;
+	int nexp = 100;
+	int dobin = -1;
+	bool is1D = false; 
+
+	gROOT->ProcessLine(".x ~/python/lhcbStyle.C");
+
+	if(argc > 1)
+	{
+		for(int a = 1; a < argc; a++)
+		{
+			string arg = argv[a];
+			string str = arg.substr(2,arg.length()-2);
+
+			if(arg=="-peff") printeff = true;
+			//if(arg.find("-T")!=string::npos) type = ((TString)str).Atof();
+			if(arg.find("-E")!=string::npos) nexp = ((TString)str).Atof();
+			if(arg.find("-B")!=string::npos) dobin = ((TString)str).Atof();
+			if(arg=="-1D") is1D = true;
+		}
+	}
+
+	//double k1v = -0.461*0.642, k2v = -0.302*0.642;
+	//if(type == 1)      { k1v = 1, k2v = 1; }
+	//else if(type == 2) { k1v = -1, k2v = -1; }
+	//else if(type == 3) { k1v = -1, k2v = 1;  }
+	//else if(type == 4) { k1v = 1,  k2v = -1; }
+
+	int start = 0;
+	int nbins = 6;
+	if(dobin>-1) { start = dobin; nbins = dobin+1; }
+	double q2min[] = {8, 15.,11.0,15,16,18,0.1};
+	double q2max[] = {11,20.,12.5,16,18,20,2.0};
+
+	TString datafilename = "/afs/cern.ch/work/p/pluca/Lmumu/weighted/candLb.root";
+	TreeReader * data = new TreeReader("candLb2Lmumu");
+	data->AddFile(datafilename);
+	TreeReader * datajpsi = new TreeReader("candLb2JpsiL");
+	datajpsi->AddFile(datafilename);
+
+	TFile * histFile = new TFile("Afb_hist.root","recreate");
+
+	string options = "-quiet-noPlot-lin-stdAxis-XM(#Lambda#mu#mu) (MeV/c^{2})-noCost-noParams";
+	Analysis::SetPrintLevel("s");
+
+	RooRealVar * cosThetaL = new RooRealVar("cosThetaL","cosThetaL",0.,-1.,1.);
+	RooRealVar * cosThetaB = new RooRealVar("cosThetaB","cosThetaB",0.,-1.,1.);
+	RooRealVar * MM = new RooRealVar("Lb_MassConsLambda","Lb_MassConsLambda",5621.,5540.,5900.);
+
+	double range[2] = {5450,6000};
+	if(is1D)
+	{ 
+		MM->setRange("Signal",5580,5660);
+		range[0] = 5580;
+		range[1] = 5660;
+	}
+	else MM->setRange("Signal",5450,6000);
+
+	//RooRealVar * MMjpsi = new RooRealVar("Lb_MassConsJpsiLambda","Lb_MassConsJpsiLambda",5621.,5550.,5800.);
+	RooMsgService::instance().setGlobalKillBelow(RooFit::FATAL);
+
+	TCanvas * ceff = new TCanvas();
+
+	RooCategory * samples = new RooCategory("samples","samples");
+	samples->defineType("DD");
+	samples->defineType("LL");
+
+	RooRealVar * afb = new RooRealVar("afb","afb",0.,-0.75,0.75);
+	RooRealVar * fL = new RooRealVar("fL","fL",0.8,0.,1.);
+	RooRealVar * afbB = new RooRealVar("afbB","afbB",0.,-0.5,0.5);
+	TString afbLpdf = "((3./8.)*(1.-fL)*(1 + TMath::Power(cosThetaL,2)) + afb*cosThetaL + (3./4.)*fL*(1 - TMath::Power(cosThetaL,2)))";
+	TString afbBpdf = "(1 + 2*afbB*cosThetaB)";
+	RooAbsPdf * teoPdf = new RooGenericPdf("teoPdf",afbLpdf,RooArgSet(*cosThetaL,*afb,*fL));
+	RooAbsPdf * teoPdfB = new RooGenericPdf("teoPdfB",afbBpdf,RooArgSet(*cosThetaB,*afbB));
+	RooAbsPdf * distr =  new RooProdPdf("distr","distr",RooArgSet(*teoPdf,*teoPdfB));
+	
+/*	
+	RooRealVar * k1 = new RooRealVar("k1","Op*alphaL",-0.461*0.642,-2.,2.);
+	RooRealVar * k2 = new RooRealVar("k2","Ou12*alphaL",-0.302*0.642,-2.,2.);
+	k1->setConstant();
+	k2->setConstant();
+	RooGenericPdf * distr2D =  new RooGenericPdf("distr",
+			"(3./8.) + (3./8.)*(cosThetaL^2)*(1-fL) - (3./16.)*fL*(cosThetaL^2) + afb*cosThetaL"  
+			"+ ((3./2.)*afbB - (3./8.)*k1)*cosThetaB - (3./2.)*afbB*(cosThetaL^2)*cosThetaB - (3./16.)*fL"
+			"+ (9./16.)*fL*(1 - cosThetaL^2) + (9./8.)*k1*(cosThetaL^2)*cosThetaB" 
+			"- (3./2.)*k2*cosThetaL*cosThetaB",
+			RooArgSet(*cosThetaL,*cosThetaB,*fL,*afb,*k1,*k2,*afbB) );
+*/
+
+	for(int i = start; i < nbins; i++)
+	{
+		TString q2name = ((TString)Form("q2_%4.2f_%4.2f",q2min[i],q2max[i])).ReplaceAll(".","");
+		RooRealVar * var = MM;
+		
+		TreeReader * mydata = data;
+		if(q2min[i]==8 && q2max[i]==11) 
+		{ 
+			mydata = datajpsi;
+			//var = MMjpsi; 
+			q2name = "jpsi"; 
+		}
+		
+		TString curq2cut = Form("TMath::Power(J_psi_1S_MM/1000,2) >= %e && TMath::Power(J_psi_1S_MM/1000,2) < %e",q2min[i],q2max[i]);	
+
+		cout << "------------------- q2 bin: " << q2min[i] << " - " << q2max[i] << " -----------------------" << endl;
+
+		
+		/**               GET MASS PARAMETERS                  **/
+
+
+		Str2VarMap jpsiParsLL = getPars(q2min[i],q2max[i],var,"LL", CutsDef::LLcut, histFile);
+		Str2VarMap jpsiParsDD = getPars(q2min[i],q2max[i],var,"DD", CutsDef::DDcut, histFile);
+
+
+		/**               GET AND FIT EFFICIENCIES                  **/
+
+		RooAbsPdf * effDDpdf = NULL, * effLLpdf = NULL, * effLLBpdf = NULL, * effDDBpdf = NULL;	
+		getEfficiencies(q2min[i],q2max[i],&effLLpdf,&effDDpdf,&effLLBpdf,&effDDBpdf,printeff);
+		cout << "Efficiencies extracted" << endl;
+		histFile->cd();
+
+
+		/**                    FIT AFB                  **/
+
+
+		afb->setVal(0);
+		afbB->setVal(-0.37);
+		fL->setVal(0.7);
+		//k1->setVal(k1v);
+		//k2->setVal(k2v);
+
+		RooAbsPdf * corrPdfLL = new RooProdPdf("sigPdfLL"+q2name,"corrPdfLL",RooArgSet(*distr,*effLLpdf,*effLLBpdf));
+		RooAbsPdf * corrPdfDD = new RooProdPdf("sigPdfDD"+q2name,"corrPdfDD",RooArgSet(*distr,*effDDpdf,*effDDBpdf));
+
+		//RooAbsPdf * corrPdf2D_LL = new RooProdPdf("sigPdf2D_LL"+q2name,"corrPdfLL",RooArgSet(*distr2D,*effLLpdf,*effLLBpdf));
+		//RooAbsPdf * corrPdf2D_DD = new RooProdPdf("sigPdf2D_DD"+q2name,"corrPdfDD",RooArgSet(*distr2D,*effDDpdf,*effDDBpdf));
+	
+		TCut baseCut = "";
+		TCut cutLL = CutsDef::LLcut + (TCut)curq2cut + baseCut;
+		TCut cutDD = CutsDef::DDcut + (TCut)curq2cut + baseCut;
+
+		histFile->cd();
+
+		double fLL[2], fDD[2], slopeLL, slopeDD, nsigDD, nsigLL;
+		RooDataSet * dataLL = getDataAndFrac("LL",q2name,mydata,range,cutLL,MM,fLL,&slopeLL,jpsiParsLL,&nsigLL,is1D);
+		RooDataSet * dataDD = getDataAndFrac("DD",q2name,mydata,range,cutDD,MM,fDD,&slopeDD,jpsiParsDD,&nsigDD,is1D);
+		RooDataSet * sideDataLL = getSideData("LL", q2name, mydata, NULL, cutLL, MM);
+		RooDataSet * sideDataDD = getSideData("DD", q2name, mydata, NULL, cutDD, MM);
+
+		cout << "Fractions:    " << fLL[0] << "   " << fDD[0] << endl;
+
+		RooRealVar * fracLL = new RooRealVar("fracLL","fracLL",fLL[0],0.1,1.);
+		RooRealVar * fracDD = new RooRealVar("fracDD","fracDD",fDD[0],0.1,1.);
+			
+		RooAbsPdf * bkgMLL = stringToPdf(Form("Exp-b[%e]",slopeLL),"bkgMLL",var);
+		RooAbsPdf * bkgMDD = stringToPdf(Form("Exp-b[%e]",slopeDD),"bkgMDD",var);
+		RooAbsPdf * sigMLL = stringToPdf("DCB_Sn","sigMLL",var,jpsiParsLL);
+		RooAbsPdf * sigMDD = stringToPdf("DCB_Sn","sigMDD",var,jpsiParsDD);
+		
+		RooAbsPdf * MmodelLL = new RooAddPdf("MassModelLL","MassModel",RooArgSet(*sigMLL,*bkgMLL),*fracLL);
+		RooAbsPdf * MmodelDD = new RooAddPdf("MassModelDD","MassModel",RooArgSet(*sigMDD,*bkgMDD),*fracDD);
+
+		RooGaussian * f_cost_LL = new RooGaussian("f_cost_LL","fLL",*fracLL,RooConst(fLL[0]),RooConst(fLL[1]));
+		RooGaussian * f_cost_DD = new RooGaussian("f_cost_DD","fDD",*fracDD,RooConst(fDD[0]),RooConst(fDD[1]));
+		RooArgSet * cons = new RooArgSet(*f_cost_LL,*f_cost_DD);
+
+		string bkgmodel = "Poly1";
+		RooAbsPdf * bkgLL_teo = stringToPdf(bkgmodel.c_str(),"bkgLL_teo", cosThetaL);
+		RooAbsPdf * bkgLLB_teo = stringToPdf(bkgmodel.c_str(),"bkgLLB_teo", cosThetaB);
+		RooAbsPdf * bkgDD_teo = stringToPdf(bkgmodel.c_str(),"bkgDD_teo", cosThetaL); 
+		RooAbsPdf * bkgDDB_teo = stringToPdf(bkgmodel.c_str(),"bkgDDB_teo", cosThetaB);
+		RooAbsPdf * bkgLL = new RooProdPdf("bkgLL","",*bkgLL_teo,*effLLpdf);
+		RooAbsPdf * bkgDD = new RooProdPdf("bkgDD","",*bkgDD_teo,*effDDpdf);
+		RooAbsPdf * bkgLLB = new RooProdPdf("bkgLLB","",*bkgLLB_teo,*effLLBpdf);
+		RooAbsPdf * bkgDDB = new RooProdPdf("bkgDDB","",*bkgDDB_teo,*effDDBpdf);
+	
+		bkgLL->fitTo(*sideDataLL);
+		bkgLLB->fitTo(*sideDataLL);
+		bkgDD->fitTo(*sideDataDD);
+		bkgDDB->fitTo(*sideDataDD);
+		fixParam(bkgLL,cosThetaL);	
+		fixParam(bkgLLB,cosThetaB);
+		fixParam(bkgDDB,cosThetaB);
+		fixParam(bkgDD,cosThetaL);
+
+		RooAbsPdf * prodBkgLL = new RooProdPdf("bkgPdfLL"+q2name,"bkgLL",RooArgSet(*bkgLL,*bkgLLB));
+		RooAbsPdf * prodBkgDD = new RooProdPdf("bkgPdfDD"+q2name,"bkgDD",RooArgSet(*bkgDD,*bkgDDB));
+
+		RooAbsPdf * totBkgLL = new RooProdPdf("totBkgPdfLL"+q2name,"bkgLL",RooArgSet(*bkgLL,*bkgLLB,*bkgMLL));
+		RooAbsPdf * totBkgDD = new RooProdPdf("totBkgPdfDD"+q2name,"bkgDD",RooArgSet(*bkgDD,*bkgDDB,*bkgMDD));
+
+		RooAbsPdf * totSigLL = new RooProdPdf("totSig2D_LL"+q2name,"bkgLL",RooArgSet(*corrPdfLL,*sigMLL));
+		RooAbsPdf * totSigDD = new RooProdPdf("totSig2D_DD"+q2name,"bkgDD",RooArgSet(*corrPdfDD,*sigMDD));
+	
+		RooAbsPdf * modelLL = new RooAddPdf("modelLL","modelLL",RooArgSet(*corrPdfLL,*prodBkgLL),*fracLL);
+		RooAbsPdf * modelDD = new RooAddPdf("modelDD","modelDD",RooArgSet(*corrPdfDD,*prodBkgDD),*fracDD);
+		
+		RooAbsPdf * totPdfLL = new RooProdPdf("totPdfLL","totPdfLL",RooArgSet(*modelLL,*MmodelLL));
+		RooAbsPdf * totPdfDD = new RooProdPdf("totPdfDD","totPdfDD",RooArgSet(*modelDD,*MmodelDD));
+
+		// CREATE COMBINED DATASET
+		RooDataSet * combData = new RooDataSet(Form("combData_%i",i),"combined data",RooArgSet(*var,*cosThetaL,*cosThetaB),
+				Index(*samples),Import("DD",*dataDD),Import("LL",*dataLL));
+		combData->Print();
+
+		
+		RooAbsPdf * corrPdfLL1D = new RooProdPdf("sigPdfLL"+q2name,"corrPdfLL",*teoPdf,*effLLpdf);
+		RooAbsPdf * corrPdfDD1D = new RooProdPdf("sigPdfDD"+q2name,"corrPdfDD",*teoPdf,*effDDpdf);
+		RooAbsPdf * corrPdfLLB1D = new RooProdPdf("sigPdfLLB"+q2name,"corrPdfLLB",*teoPdfB,*effLLBpdf);
+		RooAbsPdf * corrPdfDDB1D = new RooProdPdf("sigPdfDDB"+q2name,"corrPdfDDB",*teoPdfB,*effDDBpdf);
+
+		RooAbsPdf * modelLL1D = new RooAddPdf("modelLL1D","modelLL",RooArgSet(*corrPdfLL1D,*bkgLL),*fracLL);
+		RooAbsPdf * modelDD1D = new RooAddPdf("modelDD1D","modelDD",RooArgSet(*corrPdfDD1D,*bkgDD),*fracDD);
+		RooAbsPdf * modelLLB1D = new RooAddPdf("modelLLB1D","modelLLB",RooArgSet(*corrPdfLLB1D,*bkgLLB),*fracLL);
+		RooAbsPdf * modelDDB1D = new RooAddPdf("modelDDB1D","modelDDB",RooArgSet(*corrPdfDDB1D,*bkgDDB),*fracDD);
+
+		RooSimultaneous * combModel1D = new RooSimultaneous(Form("combModel1D_%i",i),"",*samples);
+		combModel1D->addPdf(*modelLL1D,"LL");
+		combModel1D->addPdf(*modelDD1D,"DD");
+
+		RooSimultaneous * combModel1DB = new RooSimultaneous(Form("combModel1DB_%i",i),"",*samples);
+		combModel1DB->addPdf(*modelLLB1D,"LL");
+		combModel1DB->addPdf(*modelDDB1D,"DD");
+
+		RooSimultaneous * combModel = new RooSimultaneous(Form("combModel_%i",i),"",*samples);
+		combModel->addPdf(*totPdfLL,"LL");
+		combModel->addPdf(*totPdfDD,"DD");
+		
+		Str2VarMap params, params1D, params1DB;
+		params["fL"] = fL;
+		params["afb"] = afb;	
+		params["afbB"] = afbB;
+		params1D["fL"] = fL;
+		params1D["afb"] = afb;	
+		params1DB["afbB"] = afbB;
+		
+
+		safeFit(combModel1D,combData,params1D,&isInAllowedArea,"-scan-fast",100,cons);
+		safeFit(combModel1DB,combData,params1DB,&isInAllowedAreaB,"-scan-fast",100,cons);
+		
+
+		//RooAbsReal * nll = combModel->createNLL(*combData); 
+		//findMinRandom(combModel,combData,params,NULL,"",7,cons,nll);
+
+		double origAfb = 0;
+		double origAfbh = -0.37;
+		double origfL = 0.7;
+
+		TH1F * fLsys = new TH1F(Form("fLsys_%i",i),"fLsys",40,-1,1);
+		TH1F * afbsys = new TH1F(Form("afbsys_%i",i),"afbsys",40,-1,1);
+		TH1F * afbBsys = new TH1F(Form("afbBsys_%i",i),"afbBsys",40,-1,1);
+		TH1F * hfL = new TH1F(Form("hfL_%i",i),"fLsys",200,0,1);
+		TH1F * hafb = new TH1F(Form("hafb_%i",i),"afbsys",200,-1,1);
+		TH1F * hafbB = new TH1F(Form("hafbB_%i",i),"afbBsys",200,-1,1);
+
+		RooArgSet * obs = new RooArgSet(*var,*cosThetaL,*cosThetaB);
+
+		for(int e = 0; e < nexp; e++)
+		{
+			showPercentage(e,nexp);
+
+			afb->setVal(origAfb);
+			afbB->setVal(origAfbh);
+			fL->setVal(origfL);
+			fracDD->setVal(fDD[0]);
+			fracLL->setVal(fLL[0]);
+
+			histFile->cd();
+			RooDataSet * toyDataDD  = generateDataSet("DD",obs,totSigDD,nsigDD*fDD[0],totBkgDD,nsigDD*(1.-fDD[0]));
+			RooDataSet * toyDataLL  = generateDataSet("LL",obs,totSigLL,nsigLL*fLL[0],totBkgLL,nsigLL*(1.-fLL[0]));
+			
+			RooDataSet * toyData = new RooDataSet(Form("toyData_%i",i),"combined data",
+					RooArgSet(*MM,*cosThetaL,*cosThetaB),Index(*samples),Import("DD",*toyDataDD),Import("LL",*toyDataLL));
+			toyData->Print();
+
+			double def_afb = 0;
+			double def_fL = 0;
+			double def_afbB = 0;
+			
+			afb->setVal(origAfb);
+			afbB->setVal(origAfbh);
+			fL->setVal(origfL);
+			fracDD->setVal(fDD[0]);	
+			fracDD->setConstant(false);
+			fracLL->setVal(fLL[0]);	
+			fracLL->setConstant(false);
+	
+			if(is1D)
+			{
+				safeFit(combModel1D,toyData,params1D,&isInAllowedArea,"-scan-fast",4,cons);
+				safeFit(combModel1DB,toyData,params1DB,&isInAllowedAreaB,"-scan-fast",4,cons);
+			}
+			else
+			{
+				RooAbsReal * nll = combModel->createNLL(*toyData);
+				findMinRandom(combModel,toyData,params,NULL,"",7,cons,nll);
+			}
+
+			def_afb = afb->getVal();
+			def_fL = fL->getVal();
+			def_afbB = afbB->getVal();
+
+			if(e==0)
+			{
+				if(is1D) q2name += "_1D";
+				else q2name += "_3D";
+
+				int nbinsLL = 8;
+ 				int nbinsDD = 10;
+				if(q2name=="jpsi") { nbinsLL = 20; nbinsDD = 20; }
+				
+				ceff->cd();
+				GetFrame(cosThetaL,modelLL,toyDataLL,"-noCost-plotSigComp-fillBkg",nbinsLL,NULL,vector<string>(),"cos#theta_{l}")->Draw();
+				ceff->Print("Afb_LL_"+q2name+".pdf");
+				GetFrame(cosThetaL,modelDD,toyDataDD,"-noCost-plotSigComp-fillBkg",nbinsDD,NULL,vector<string>(),"cos#theta_{l}")->Draw();
+				ceff->Print("Afb_DD_"+q2name+".pdf");
+
+				GetFrame(var,MmodelLL,toyDataLL,"-noCost-fillBkg",30,NULL,vector<string>(),"m(#Lambda#mu#mu)")->Draw();
+				ceff->Print("Mfit_Afb_LL_"+q2name+".pdf");
+				GetFrame(var,MmodelDD,toyDataDD,"-noCost-fillBkg",30,NULL,vector<string>(),"m(#Lambda#mu#mu)")->Draw();
+				ceff->Print("Mfit_Afb_DD_"+q2name+".pdf");
+
+				GetFrame(cosThetaB,modelLL,toyDataLL,"-noCost-plotSigComp-fillBkg",nbinsLL,NULL,vector<string>(),"cos#theta_{#Lambda}")->Draw();
+				ceff->Print("AfbB_LL_"+q2name+".pdf");
+				GetFrame(cosThetaB,modelDD,toyDataDD,"-noCost-plotSigComp-fillBkg",nbinsDD,NULL,vector<string>(),"cos#theta_{#Lambda}")->Draw();
+				ceff->Print("AfbB_DD_"+q2name+".pdf");
+			}
+
+			fLsys->Fill(  def_fL-origfL    );
+			afbsys->Fill( def_afb-origAfb  );
+			afbBsys->Fill(def_afbB-origAfbh);
+
+			hfL->Fill(def_fL);
+			hafb->Fill(def_afb);
+			hafbB->Fill(def_afbB);
+
+			delete toyDataDD;
+			delete toyDataLL;
+			delete toyData;
+		}
+	
+		ceff->cd();
+		gStyle->SetOptStat("ReM");
+		
+		if(is1D) fLsys->SetTitle("1D");
+		else fLsys->SetTitle("3D");
+		fLsys->GetXaxis()->SetTitle("f_{L}");
+		fLsys->Draw();
+		ceff->Print("toys3D_fL_bias.pdf");
+		
+		if(is1D) afbsys->SetTitle("1D");
+		else afbsys->SetTitle("3D");
+		afbsys->GetXaxis()->SetTitle("A_{FB}^{#ell}");
+		afbsys->Draw();
+		ceff->Print("toys3D_afb_bias.pdf");
+		
+		if(is1D) afbBsys->SetTitle("1D");
+		else afbBsys->SetTitle("3D");
+		afbBsys->GetXaxis()->SetTitle("A_{FB}^{h}");
+		afbBsys->Draw();
+		ceff->Print("toys3D_afbB_bias.pdf");
+		
+		if(is1D) hfL->SetTitle("1D");
+		else hfL->SetTitle("3D");
+		hfL->GetXaxis()->SetTitle("f_{L}");
+		hfL->Draw();
+		ceff->Print("toys3D_fL.pdf");
+	
+		if(is1D) hafb->SetTitle("1D");
+		else hafb->SetTitle("3D");
+		hafb->GetXaxis()->SetTitle("A_{FB}^{#ell}");
+		hafb->Draw();
+		ceff->Print("toys3D_afb.pdf");
+
+		if(is1D) hafbB->SetTitle("1D");
+		else hafbB->SetTitle("3D");
+		hafbB->GetXaxis()->SetTitle("A_{FB}^{h}");
+		hafbB->Draw();
+		ceff->Print("toys3D_afbB.pdf");
+
+
+		cout << fixed << setprecision(2) << "-------- Bin " << q2min[i] << "-" << q2max[i] << endl;
+		cout << fixed << setprecision(5) << "fL sys = " << fLsys->GetMean() << " +/- " << fLsys->GetMeanError() << endl;
+		cout << "Afb sys = " << afbsys->GetMean() << " +/- " << afbsys->GetMeanError() << endl;
+		cout << "AfbB sys = " << afbBsys->GetMean() << " +/- " << afbBsys->GetMeanError() << endl;
+
+		cout << endl << endl;
+		cout << fixed << setprecision(5) << "fL sys = " << hfL->GetRMS() << endl;
+		cout << "Afb sys = " << hafb->GetRMS() << endl;
+		cout << "AfbB sys = " << hafbB->GetRMS() << endl;
+	}
+}

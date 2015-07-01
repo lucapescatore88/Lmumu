@@ -1,0 +1,186 @@
+#include "ReadTree_comp.hpp"
+#include "multi_analyser.hpp"
+#include "Lb_cuts.hpp"
+#include "RooAbsReal.h"
+#include "RooSimultaneous.h"
+#include "RooGenericPdf.h"
+#include "TGraphErrors.h"
+#include "TROOT.h"
+
+using namespace RooFit;
+using namespace std;
+
+int main(int argc, char **argv)
+{
+	bool useeff = true;
+	bool print = false;
+	unsigned nexp = 1000;	
+	int ngen = 1e4;
+
+	double genfL[] =  { 0.75,  0.50, 0.50, 0.50, 0.25,  0.25, 0.25, 0.25, 0.25, 0.00,  0.00, 0.00, 0.00, 0.00  , -0.25, -0.25, -0.25, -0.25, -0.25, -0.25, -0.25, -0.50, -0.50, -0.50, -0.50, -0.50, -0.50, -0.50, -0.75, -0.75, -0.75, -0.75, -0.75 };
+	double genAfb[] = { 0.00, -0.25, 0.00, 0.25, -0.5, -0.25, 0.00, 0.25, 0.50, -0.5, -0.25, 0.00, 0.25, 0.50  , -0.75, -0.50, -0.25,  0.00,  0.25,  0.50,  0.75, -0.75, -0.50, -0.25,  0.00,  0.25,  0.50,  0.75, -0.50, -0.25,  0.00,  0.25,  0.50 };
+	unsigned npoints = 33;
+
+	if(argc > 1)
+	{
+		for(int a = 1; a < argc; a++)
+		{
+			string arg = argv[a];
+			string str = arg.substr(2,arg.length()-2);
+
+			if(arg=="-noeff") { useeff = false; continue; }
+			if(arg=="-p") { print = true; continue; }
+			if(arg.find("-e") != string::npos) nexp = ((TString)str).Atof();
+			if(arg.find("-n") != string::npos) ngen = ((TString)str).Atof();
+			if(arg.find("-A") != string::npos) { genAfb[0] = ((TString)str).Atof(); npoints = 1; }
+			if(arg.find("-f") != string::npos) { genfL[0] = ((TString)str).Atof(); npoints = 1; }
+		}
+	}
+
+	//gROOT->ProcessLine(".x lhcbStyle.C");
+	TCanvas * ceff = new TCanvas();
+
+	RooRealVar * cosThetaL = new RooRealVar("cosThetaL","cosThetaL",0.,-1.,1.);
+
+	TFile * effFile = TFile::Open("/afs/cern.ch/user/p/pluca/work/Lb/Lmumu/results/LbeffvscosThetaL_DD.root");
+	TH1F * effDD  = (TH1F *)effFile->Get("htoteff");
+	effDD->Scale(1./effDD->Integral());
+	effFile = TFile::Open("/afs/cern.ch/user/p/pluca/work/Lb/Lmumu/results/LbeffvscosThetaL_LL.root");
+	TH1F * effLL  = (TH1F *)effFile->Get("htoteff");
+	effLL->Scale(1./effLL->Integral());
+	RooDataHist * hLL = new RooDataHist("hLL","hLL",*cosThetaL,effLL);
+	RooDataHist * hDD = new RooDataHist("hDD","hDD",*cosThetaL,effDD);
+	RooRealVar * c1LL = new RooRealVar("c1LL","",0.,-100.,100);
+	RooRealVar * c1DD = new RooRealVar("c1DD","",0.,-100.,100);
+	RooRealVar * c2LL = new RooRealVar("c2LL","",0.,-100.,100);
+	RooRealVar * c2DD = new RooRealVar("c2DD","",0.,-100.,100);
+	TString effLLstr = "(1 + c1LL*cosThetaL + c2LL*TMath::Power(cosThetaL,2))";
+	TString effDDstr = "(1 + c1DD*cosThetaL + c2DD*TMath::Power(cosThetaL,2))";
+	RooAbsPdf * effLLpdf = new RooGenericPdf("effLLpdf", "", effLLstr, RooArgSet(*cosThetaL, *c1LL, *c2LL));
+	RooAbsPdf * effDDpdf = new RooGenericPdf("effDDpdf", "", effDDstr, RooArgSet(*cosThetaL, *c1DD, *c2DD));
+	if(useeff)
+	{
+		effLLpdf->fitTo(*hLL);
+		effDDpdf->fitTo(*hDD);
+		fixParams(effLLpdf,cosThetaL);
+		fixParams(effDDpdf,cosThetaL);
+
+		GetFrame(cosThetaL, hLL,  effLLpdf,"-nochi2",0,NULL,0,"cos#theta_{L}","Tot. eff.")->Draw();
+		ceff->Print("DDeffFit.pdf");
+		GetFrame(cosThetaL, hDD,  effDDpdf,"-nochi2",0,NULL,0,"cos#theta_{L}","Tot. eff.")->Draw();
+		ceff->Print("LLeffFit.pdf");
+	}
+
+	TFile * histFile = new TFile("Afb_toys.root","recreate");
+
+	TH2F * devAfb = new TH2F("devAfb","Pulls Mean Afb",9,-1.125,1.125,9,-1.125,1.125);
+	TH2F * devfL = new TH2F("devfL","Pulls Mean fL",9,-1.125,1.125,9,-1.125,1.125);
+	TH2F * errorAfb = new TH2F("Pulls RMS Afb","",9,-1.125,1.125,9,-1.125,1.125);
+	TH2F * errorfL2D = new TH2F("errorfL2D","Pulls RMS fL",9,-1.125,1.125,9,-1.125,1.125);
+
+	for(unsigned f = 0; f < npoints; f++)
+	{
+		cout << fixed << setprecision(2) << "******************** Afb = " << genAfb[f] << ", fL = " << genfL[f] << " ********************" << endl; 
+		TGraph * scatter = new TGraph();
+		TGraph * scatterErr = new TGraph();	
+		TH1F * pullsAfb = new TH1F(Form("pullsAfb_%i",f),"",50,-5,5);
+		TH1F * pullsfL = new TH1F(Form("pullsfL_%i",f),"",50,-5,5);
+		TH1F * central = new TH1F(Form("centralAfb_%i",f),"",50,-1,1);
+		TH1F * error = new TH1F(Form("errorAfbb_%i",f),"",50,0,0.5);
+		TH1F * centralfL = new TH1F(Form("centralfL_%i",f),"",50,-2,5);
+		TH1F * errorfL = new TH1F(Form("errorAfb_%i",f),"",50,0,3);
+		central->SetTitle(Form("Afb ( gen: Afb = %4.2f, fL = %4.2f, N^{tot}_{obs} = %i )",genAfb[f],genfL[f],ngen));
+		error->SetTitle(Form("#Delta Afb ( gen: Afb = %4.2f, fL = %4.2f, N^{tot}_{obs} = %i )",genAfb[f],genfL[f],ngen));
+		centralfL->SetTitle(Form("Afb ( gen: Afb = %4.2f, fL = %4.2f, N^{tot}_{obs} = %i )",genAfb[f],genfL[f],ngen));
+		errorfL->SetTitle(Form("#Delta Afb ( gen: Afb = %4.2f, fL = %4.2f, N^{tot}_{obs} = %i )",genAfb[f],genfL[f],ngen));
+		central->GetXaxis()->SetTitle("Afb");
+		error->GetXaxis()->SetTitle("#Delta Afb");
+		centralfL->GetXaxis()->SetTitle("fL");
+		errorfL->GetXaxis()->SetTitle("#Delta fL");
+
+		RooMsgService::instance().setGlobalKillBelow(RooFit::ERROR);
+
+		gStyle->SetOptStat(000001110);
+
+		for(unsigned e = 0; e < nexp; e++)
+		{
+			showPercentage(e,nexp);
+
+			RooRealVar * afb = new RooRealVar("afb","afb",genAfb[f],-10,10);
+			RooRealVar * fL = new RooRealVar("fL","fL",genfL[f],-100.,100.);
+			TString afbLpdf = "((3./8.)*(1.-fL)*(1 + TMath::Power(cosThetaL,2)) + afb*cosThetaL + (3./4.)*fL*(1 - TMath::Power(cosThetaL,2)))";
+			RooAbsPdf * corrPdf;
+			if(useeff) corrPdf = new RooGenericPdf("corrPdf",effLLstr+"*"+afbLpdf,RooArgSet(*cosThetaL, *afb, *fL, *c1LL, *c2LL) );
+			else corrPdf = new RooGenericPdf("corrPdf",afbLpdf,RooArgSet(*cosThetaL, *afb, *fL, *c1LL, *c2LL) );
+
+			Analysis::SetPrintLevel("s");
+			Analysis * ana = new Analysis("Ana",cosThetaL);
+			ana->SetModel(corrPdf);
+			ana->Generate(ngen);
+			RooDataSet * data = ana->GetDataSet("-recalc");
+
+			//RooDataSet * data = corrPdf->generate(*cosThetaL,ngen);
+			afb->setVal(0.);
+			fL->setVal(0.6);
+
+			corrPdf->fitTo(*data,PrintLevel(-1),Verbose(kFALSE));		
+
+			if(e < 10 && print) { GetFrame(cosThetaL, data, corrPdf,"-nochi2",10,NULL,0,"cos#theta_{L}","N evts")->Draw(); ceff->Print(Form("distrib_%i.pdf",(int)e)); }
+			
+			scatter->SetPoint(e+1,afb->getVal(),fL->getVal());
+			scatterErr->SetPoint(e+1,afb->getError(),fL->getError());
+			central->Fill(afb->getVal());
+			error->Fill(afb->getError());
+			centralfL->Fill(fL->getVal());
+			errorfL->Fill(fL->getError());
+			pullsAfb->Fill((afb->getVal() - genAfb[f])/afb->getError());
+			pullsfL->Fill((fL->getVal() - genfL[f])/fL->getError());
+		}
+
+		devAfb->Fill(genAfb[f],genfL[f],pullsAfb->GetMean());
+		devfL->Fill(genAfb[f],genfL[f],pullsfL->GetMean());
+		errorAfb->Fill(genAfb[f],genfL[f],pullsAfb->GetRMS());
+		errorfL2D->Fill(genAfb[f],genfL[f],pullsfL->GetRMS());
+
+		if(genAfb[f]==0 && genfL[f]==0.75)
+		{
+			scatter->Draw("AP");
+			ceff->Print("Afb_vs_fL.pdf");
+			scatterErr->Draw("AP");
+			ceff->Print("AfbErr_vs_fLErr.pdf");
+			central->Draw();
+			ceff->Print("Afb.pdf");
+			error->Draw();
+			ceff->Print("errorAfb.pdf");
+			pullsAfb->Draw();
+			ceff->Print("pullsAfb.pdf");		
+			centralfL->Draw();
+			ceff->Print("fL.pdf");
+			errorfL->Draw();
+			ceff->Print("errorfL.pdf");
+			pullsfL->Draw();
+			ceff->Print("pullsfL.pdf");		
+		}
+	}
+
+	gStyle->SetOptStat(0);
+
+	TH2F * devSigmaAfb = (TH2F *)devAfb->Clone("devSigmaAfb");
+	devSigmaAfb->Divide(devAfb,errorAfb,1.,1./TMath::Sqrt(nexp));
+	TH2F * devSigmafL = (TH2F *)devAfb->Clone("devSigmafL");
+	devSigmafL->Divide(devfL,errorfL2D,1.,1./TMath::Sqrt(nexp));
+	devSigmaAfb->SetTitle("Number of sigma that pulls mean is away form 0");
+	devSigmafL->SetTitle("Number of sigma that pulls mean is away form 0");
+	errorAfb->Draw("colz");
+	ceff->Print("errorAfb2D.pdf");
+	devSigmaAfb->Draw("colz");
+	ceff->Print("devAfb.pdf");
+	errorfL2D->Draw("colz");
+	ceff->Print("errorfL2D.pdf");
+	devSigmafL->Draw("colz");
+	ceff->Print("devfL.pdf");
+
+	delete ceff;
+	histFile->Write();
+	delete histFile;
+}

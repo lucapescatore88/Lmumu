@@ -1,0 +1,133 @@
+#include "ReadTree_comp.hpp"
+#include "multi_analyser.hpp"
+#include "Lb_cuts.hpp"
+#include "RooAbsReal.h"
+#include "RooSimultaneous.h"
+#include "RooGenericPdf.h"
+#include "TGraphErrors.h"
+#include "TROOT.h"
+
+using namespace RooFit;
+using namespace std;
+
+
+double maxWithSign(double null, double a, double b)
+{
+	double max = TMath::Max(TMath::Abs(a - null),TMath::Abs(null - b));
+	if(max == TMath::Abs(a - null)) return (a - null);
+	else return null - b;
+}
+
+
+int main(int argc, char **argv)
+{
+	RooRealVar * cosThetaL = new RooRealVar("cosThetaL","cosThetaL",0,-1,1);
+	RooRealVar * cosThetaB = new RooRealVar("cosThetaB","cosThetaB",0,-1,1);
+
+	TString effbase = "/afs/cern.ch/user/p/pluca/work/Lb/Lmumu/results/";
+	TFile * effFile = TFile::Open(effbase+"Lbeff2D_cosThetaB_vs_cosThetaL_All.root");
+	TH1 * eff  = (TH1 *)effFile->Get("hupper_eff");
+	RooDataHist * heff = new RooDataHist("heff","heff",RooArgSet(*cosThetaL,*cosThetaB),eff);
+	RooHistPdf  * effpdf = new RooHistPdf("effpdf","effpdf",RooArgSet(*cosThetaL,*cosThetaB),*heff);
+
+	RooRealVar * fL = new RooRealVar("fL","fL",0.7,0,1);
+	RooRealVar * afb = new RooRealVar("afb","afb",0,-1,1);
+	RooRealVar * afbB = new RooRealVar("afbB","afbB",-0.37,-1,1);
+	RooRealVar * alphaL = new RooRealVar("alphaL","alphaL",0.642);
+	RooRealVar * Op = new RooRealVar("Op","Op",-0.461);
+	RooRealVar * Ou12 = new RooRealVar("Ou12","Ou12",-0.302);
+
+	RooGenericPdf * distr =  new RooGenericPdf("distr",
+			"(3./8.) + (3./8.)*(cosThetaL^2)*(1-fL) - (3./16.)*fL*(cosThetaL^2) + afb*cosThetaL"  
+			"+ ((3./2.)*afbB - (3./8.)*alphaL*Op)*cosThetaB - (3./2.)*afbB*(cosThetaL^2)*cosThetaB - (3./16.)*fL"
+			"+ (9./16.)*fL*(1 - cosThetaL^2) + (9./8.)*alphaL*Op*(cosThetaL^2)*cosThetaB" 
+			"- (3./2.)*alphaL*Ou12*cosThetaL*cosThetaB",
+			RooArgSet(*cosThetaL,*cosThetaB,*fL,*afb,*Op,*Ou12,*alphaL,*afbB) );
+
+	RooProdPdf * pdf = new RooProdPdf("pdf","pdf",*distr,*effpdf);
+
+	effFile = TFile::Open(effbase+"LbeffvscosThetaL_All.root");
+	TH1 * effAll  = (TH1F *)effFile->Get("huppereff");
+	effFile = TFile::Open(effbase+"LbeffvscosThetaB_All.root");
+	TH1 * effAllB  = (TH1F *)effFile->Get("huppereff");
+
+	RooDataHist * h = new RooDataHist("h","h",*cosThetaL,effAll);
+	RooRealVar * c1 = new RooRealVar("c1","",0.,-1.,1);
+	RooRealVar * c2 = new RooRealVar("c2","",0.,-1.,1);
+	TString effstr = "(1 + c1*cosThetaL + c2*TMath::Power(cosThetaL,2))";
+	RooAbsPdf * effpdfL = new RooGenericPdf("effpdfL", "", effstr, RooArgSet(*cosThetaL, *c1, *c2));
+	effpdfL->fitTo(*h,PrintLevel(-1));
+	fixParams(effpdfL,cosThetaL);
+
+
+	RooDataHist * hB = new RooDataHist("hB","hB",*cosThetaB,effAllB);
+	RooRealVar * cB1 = new RooRealVar("cB1","",0,-1.,1);
+	RooRealVar * cB2 = new RooRealVar("cB2","",0,-1.,1);
+	TString effBstr = "(1 + cB1*cosThetaB + cB2*TMath::Power(cosThetaB,2))";
+	RooAbsPdf * effpdfB = new RooGenericPdf("effpdfB", "", effBstr, RooArgSet(*cosThetaB, *cB1, *cB2));
+	effpdfB->fitTo(*hB,PrintLevel(-1));
+	fixParams(effpdfB,cosThetaB);
+
+
+	TString afbLpdf = "((3./8.)*(1.-fL)*(1 + TMath::Power(cosThetaL,2)) + afb*cosThetaL + (3./4.)*fL*(1 - TMath::Power(cosThetaL,2)))";
+	RooAbsPdf * corrPdf = new RooGenericPdf("corrPdfLL",effstr+"*"+afbLpdf,RooArgSet(*cosThetaL, *afb, *fL, *c1, *c2) );
+
+	TString afbBpdf = "(1 + 2*afbB*cosThetaB)";
+	RooAbsPdf * corrPdfB = new RooGenericPdf("corrPdfB",effBstr+"*"+afbBpdf,RooArgSet(*cosThetaB, *afbB, *cB1, *cB2) );
+
+	TH1F * fLsys = new TH1F("fLsys","",40,-1,1);
+	TH1F * afbsys = new TH1F("afbsys","",40,-1,1);
+	TH1F * afbBsys = new TH1F("afbBsys","",40,-1,1);
+
+	RooMsgService::instance().setGlobalKillBelow(RooFit::FATAL);
+	TCanvas * c = new TCanvas();
+	int nexp = 1000;
+	int ngen = 200;
+
+	for(int e = 0; e < nexp; e++)
+	{
+		showPercentage(e,nexp);
+
+		afb->setVal(0.);
+		afbB->setVal(-0.37);
+		fL->setVal(0.7);
+
+		RooDataSet * toy = pdf->generate(RooArgSet(*cosThetaL,*cosThetaB),ngen);
+		
+		afb->setVal(0.);
+		afbB->setVal(0.);
+		fL->setVal(0.7);
+
+		corrPdf->fitTo(*toy,PrintLevel(-1));
+		
+		double afbv = afb->getVal();
+		double fLv = fL->getVal();
+
+		afb->setVal(0.);
+		afbB->setVal(0.);
+		fL->setVal(0.7);
+
+		corrPdfB->fitTo(*toy,PrintLevel(-1));
+		
+		double afbBv = afbB->getVal();
+		
+		fLsys->Fill(fLv - 0.7);
+		afbsys->Fill(afbv);
+		afbBsys->Fill(afbBv + 0.37);
+	}
+
+	fLsys->GetXaxis()->SetTitle("#Delta f_{L}");
+	fLsys->Draw();
+	c->Print("fLsys_efficiency.pdf");
+	afbsys->GetXaxis()->SetTitle("#Delta A_{FB}");
+	afbsys->Draw();
+	c->Print("afbsys_efficiency.pdf");
+	afbBsys->GetXaxis()->SetTitle("#Delta A_{FB}^{h}");
+	afbBsys->Draw();
+	c->Print("afbBsys_efficiency.pdf");
+
+	cout << fixed << setprecision(7);
+	cout << "fLsys = " << fLsys->GetMean() << " +/- " << fLsys->GetMeanError() << endl;
+	cout << "afbsys = " << afbsys->GetMean() << " +/- " << afbsys->GetMeanError() << endl;
+	cout << "afbBsys = " << afbBsys->GetMean() << " +/- " << afbBsys->GetMeanError() << endl;
+}

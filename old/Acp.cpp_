@@ -1,0 +1,77 @@
+#include "ReadTree_comp.hpp"
+#include "multi_analyser.hpp"
+#include "Lb_cuts.hpp"
+#include "RooAbsReal.h"
+#include "RooSimultaneous.h"
+#include "RooGenericPdf.h"
+#include "TGraphErrors.h"
+#include "TROOT.h"
+#include "FeldmanCousins.hpp"
+
+using namespace RooFit;
+using namespace std;
+
+int main(int argc, char **argv)
+{
+	//gROOT->ProcessLine(".x lhcbStyle.C");
+
+	/*
+	TString datafilename = "/afs/cern.ch/user/p/pluca/work/Lb/Lmumu/candLb.root";
+	TFile * dataFile = TFile::Open(datafilename);
+
+	TTree * dataTree = (TTree *)dataFile->Get("candLb2Lmumu");
+	TTree * dataTree_jpsi = (TTree *)dataFile->Get("candLb2JpsiL");
+
+	//TCut baseCut = "TMath::Abs(Lb_MM - 5620) < 50";
+	TCut baseCut = "Lb_MM < 5500";
+	TCut baseCut_jpsi = "Lb_MM < 5500";
+	//TCut baseCut_jpsi = "TMath::Abs(Lb_MM - 5620) < 50";
+	baseCut += CutsDef::highq2Cut;
+	//baseCut = CutsDef::lowq2Cut;	
+	
+	   if(counting)
+	   {
+	   Nplus = dataTree->Draw("Lb_MM","pplus_ID>0"+baseCut);
+	   Nminus = dataTree->Draw("Lb_MM","pplus_ID<0"+baseCut);
+	   Nplus_jpsi = dataTree_jpsi->Draw("Lb_MM","pplus_ID>0"+baseCut_jpsi);
+	   Nminus_jpsi = dataTree_jpsi->Draw("Lb_MM","pplus_ID<0"+baseCut_jpsi);
+	   }
+	   */
+
+	int nbins = 5;
+	double q2min[] = { 15.0, 11.0, 15.0, 16.0, 18.0 };
+	double q2max[] = { 20.0, 12.5, 16.0, 18.0, 20.0 };
+
+	double Nplus_jpsi = 5205.2;
+	double Nplus_jpsi_err = 96.5;
+	double Nplus[] = {117.9, 11.9, 26.9, 53.8, 37.0 };
+	double Nplus_err[] = {12.2, 5.1, 6.1, 8.1, 6.6 };
+
+	double Nminus_jpsi = 4807.7;
+	double Nminus_jpsi_err = 89.7;
+	double Nminus[] = { 82.5, 23.4, 16.0, 34.3, 34.9 };
+	double Nminus_err[] = { 10.2, 6.0, 4.6, 6.8, 6.1 };
+
+
+	double Ntot_jpsi = Nplus_jpsi + Nminus_jpsi;
+	double Acp_raw_jpsi = (Nplus_jpsi - Nminus_jpsi)/(Nplus_jpsi + Nminus_jpsi);
+	double Acp_raw_jpsi_err = 2*TMath::Sqrt(TMath::Power(Nplus_jpsi*Nminus_jpsi_err,2) + TMath::Power(Nminus_jpsi*Nplus_jpsi_err,2))/TMath::Power(Ntot_jpsi,2);
+
+
+	cout << "Jpsi Acp_raw = " << Acp_raw_jpsi << " \\pm " << Acp_raw_jpsi_err << endl;
+	cout << "q2 bins \t\t& N_{Lb} \t\t& N_{Lbbar} \t\t\t& A_{raw} \t\t\t& A_{CP} \\\\" << endl; 
+
+	for(int i = 0; i < nbins; i++)
+	{
+		double Ntot = Nplus[i] + Nminus[i];
+		double Acp_raw = (Nplus[i] - Nminus[i])/(Nplus[i] + Nminus[i]);
+		double Acp = Acp_raw - Acp_raw_jpsi;
+		//double Acp_raw_err = 2*TMath::Sqrt(Nplus*Nminus/TMath::Power(Ntot,3));
+		double Acp_raw_err = 2*TMath::Sqrt(TMath::Power(Nplus[i]*Nminus_err[i],2) + TMath::Power(Nminus[i]*Nplus_err[i],2))/TMath::Power(Ntot,2);
+
+		cout << fixed << setprecision(2) << q2min[i] << "-" << q2max[i];
+		cout << "\t&  " << Nplus[i] << "\t&  " << Nminus[i]; 
+		cout << "\t\t&  " << fixed << setprecision(5) << Acp_raw << " \\pm " << Acp_raw_err << "\t\t&   " << Acp  << " \\pm " << Acp_raw_err + Acp_raw_jpsi_err  << " \\\\" << endl;
+	}
+}
+

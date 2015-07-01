@@ -1,0 +1,5 @@
+~/python/submit.py $1 -q 1nd -d FC_afbB -n B1 'AnafitAfb_nosW_new.out -EafbB -B1'
+~/python/submit.py $1 -q 1nd -d FC_afbB -n B2 'AnafitAfb_nosW_new.out -EafbB -B2'
+~/python/submit.py $1 -q 1nd -d FC_afbB -n B3 'AnafitAfb_nosW_new.out -EafbB -B3'
+~/python/submit.py $1 -q 1nd -d FC_afbB -n B4 'AnafitAfb_nosW_new.out -EafbB -B4'
+~/python/submit.py $1 -q 1nd -d FC_afbB -n B5 'AnafitAfb_nosW_new.out -EafbB -B5'

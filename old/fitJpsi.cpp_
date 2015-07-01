@@ -1,0 +1,78 @@
+#include <vector>
+#include <sstream>
+#include <iostream>
+#include <string>
+#include <time.h>
+
+#include "RooRealVar.h"
+#include "RooStats/SPlot.h"
+#include "RooDataSet.h"
+#include "RooRealVar.h"
+#include "RooGaussian.h"
+#include "RooExponential.h"
+#include "RooCBShape.h"
+#include "RooArgusBG.h"
+#include "RooChebychev.h"
+#include "RooAddPdf.h"
+#include "RooDataHist.h"
+#include "RooHistPdf.h"
+#include "RooDataSet.h"
+#include "RooAbsData.h"
+#include "RooProdPdf.h"
+#include "RooAddition.h"
+#include "RooProduct.h"
+#include "RooArgusBG.h"
+#include "RooKeysPdf.h"
+#include "RooArgList.h"
+#include "RooPolynomial.h"
+
+#include "TSystem.h"
+#include "TFile.h"
+#include "TTree.h"
+#include "TH1.h"
+#include "TEntryList.h"
+#include "TCanvas.h"
+#include "TBranch.h"
+#include "TCut.h"
+
+#include "general_functions.hpp"
+#include "ReadTree_comp.hpp"
+#include "analyser.hpp"
+#include "Lb_cuts.hpp"
+
+using namespace std;
+using namespace RooFit;
+
+
+int main(int argc, char **argv)
+{
+	string analysis = "Lb2Lmumu";
+	
+	// Set trees of cancdidates previously created
+	
+	TString candfilename = "/afs/cern.ch/work/p/pluca/weighted/Lb2Lmumu_CL_weighted.root";
+	if(TFile::Open(candfilename)==0) return 1;
+
+	RooRealVar * vLbCons = new RooRealVar("Lb_MassConsJpsiAndLambda_M[0]","Lb_MassConsJpsiAndLambda_M[0]",5620.,5500.,5900.);
+	TreeReader * candTree_LbJpsi = new TreeReader("tree");
+	candTree_LbJpsi->AddFile(candfilename);
+	Analysis * anaLbJpsi = new Analysis("Lb2JpsiL_norm","Lb",candTree_LbJpsi,&CutsDef::jpsiCut,vLbCons);
+	
+
+	ModelBuilder::SetScale(1.);
+	anaLbJpsi->SetSignal("DCB",5619,40,2.e4);
+	//anaLbJpsi->addBkgComponent("swap",jpsiSwapTree);
+	//anaLbJpsi->addBkgComponent("BdJpsiKS",BdJpsiKSTree);
+	anaLbJpsi->Initialize("30");
+	anaLbJpsi->Fit(5500.,5750.,200,false,"-pulls-log");
+	anaLbJpsi->PrintChi2();
+	
+	cout << anaLbJpsi->GetSigVal() << endl;
+	
+	return 0;
+}
+
+
+
+
+

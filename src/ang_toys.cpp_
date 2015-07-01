@@ -1,0 +1,638 @@
+#include "ReadTree_comp.hpp"
+#include "multi_analyser.hpp"
+#include "Lb_cuts.hpp"
+#include "RooAbsReal.h"
+#include "RooSimultaneous.h"
+#include "RooGenericPdf.h"
+#include "TGraphErrors.h"
+#include "TGraphAsymmErrors.h"
+#include "TROOT.h"
+#include "FeldmanCousins.hpp"
+#include "RooKeysPdf.h"
+#include "functions.hpp"
+#include "fitfunc.hpp"
+#include "TRandom3.h"
+
+using namespace RooFit;
+using namespace std;
+
+int main(int argc, char **argv)
+{
+	bool printeff = true;
+	//string fc = "none";
+	string sys = "all";
+	int nexp = 500;
+	int dobin = -1;
+
+	gROOT->ProcessLine(".x ~/work/lhcbStyle.C");
+
+	if(argc > 1)
+	{
+		for(int a = 1; a < argc; a++)
+		{
+			string arg = argv[a];
+			string str = arg.substr(2,arg.length()-2);
+
+			if(arg=="-peff") printeff = true;
+			if(arg.find("-S")!=string::npos) sys=str;
+			if(arg.find("-B")!=string::npos) dobin = ((TString)str).Atof();
+			if(arg.find("-E")!=string::npos) nexp = ((TString)str).Atof();
+
+		}
+	}
+
+	int nbins = 2;
+	int start = 1;
+	if(dobin!=-1) { start = dobin; nbins = dobin+1; }
+	double q2min[] = {8.,15.,11.0,15,16,18, 0.1};
+	double q2max[] = {11.,20.,12.5,16,18,20, 2.};
+
+	TString datafilename = "/afs/cern.ch/work/p/pluca/Lmumu/weighted/candLb.root";
+	TreeReader * data = new TreeReader("candLb2Lmumu");
+	data->AddFile(datafilename);
+	TreeReader * datajpsi = new TreeReader("candLb2JpsiL");
+	datajpsi->AddFile(datafilename);
+
+	TFile * histFile = new TFile("Afb_bkgSys.root","recreate");
+
+	string options = "-quiet-noPlot-lin-XM(#Lambda#mu#mu) (MeV/c^{2})-noCost-noParams";
+	Analysis::SetPrintLevel("s");
+
+	RooRealVar * cosThetaL = new RooRealVar("cosThetaL","cosThetaL",0.,-1.,1.);
+	RooRealVar * cosThetaB = new RooRealVar("cosThetaB","cosThetaB",0.,-1.,1.);
+	RooRealVar * MM = new RooRealVar("Lb_MassConsLambda","Lb_MassConsLambda",5621.,5450.,6000.);
+		
+	double trange[2] = {5590,5650};
+	double * range = &trange[0];
+	MM->setRange("Signal",5590,5650);
+	MM->Print();
+
+	RooMsgService::instance().setGlobalKillBelow(RooFit::ERROR);
+
+	RooCategory * samples = new RooCategory("samples","samples");
+	samples->defineType("DD");
+	samples->defineType("LL");
+
+	RooRealVar * afb = new RooRealVar("afb","afb",0.,-0.75,0.75);
+	RooRealVar * fL = new RooRealVar("fL","fL",0.6,0.,1.);
+	TString afbLpdf = "((3./8.)*(1.-fL)*(1 + TMath::Power(cosThetaL,2)) + afb*cosThetaL + (3./4.)*fL*(1 - TMath::Power(cosThetaL,2)))";
+	RooRealVar * afbB = new RooRealVar("afbB","afbB",0.,-0.5,0.5);
+	TString afbBpdf = "(1 + 2*afbB*cosThetaB)";
+	RooAbsPdf * teoPdf = new RooGenericPdf("teoPdf",afbLpdf,RooArgSet(*cosThetaL,*afb,*fL));
+	RooAbsPdf * teoPdfB = new RooGenericPdf("teoPdfB",afbBpdf,RooArgSet(*cosThetaB,*afbB));
+
+	vector<TH1 *> fLsysh, afbsysh, afbBsysh, fLsysh_bkg, afbsysh_bkg, afbBsysh_bkg,
+	fLsysh_eff, afbsysh_eff, afbBsysh_eff ;
+
+	for(int i = start; i < nbins; i++)
+	{
+		TreeReader * mydata = data;
+		TString q2name = ((TString)Form("q2_%4.2f_%4.2f",q2min[i],q2max[i])).ReplaceAll(".","");
+		if(q2min[i]==8 && q2max[i]==11){ mydata = datajpsi; q2name = "jpsi"; }
+		TString curq2cut = Form("TMath::Power(J_psi_1S_MM/1000,2) >= %e && TMath::Power(J_psi_1S_MM/1000,2) < %e",q2min[i],q2max[i]);	
+
+		cout << "------------------- q2 bin: " << q2min[i] << " - " << q2max[i] << " -----------------------" << endl;
+
+
+		/**               GET MASS PARAMETERS                  **/
+
+
+		Str2VarMap jpsiParsLL = getPars(q2min[i],q2max[i],MM,"LL", CutsDef::LLcut, histFile);
+		Str2VarMap jpsiParsDD = getPars(q2min[i],q2max[i],MM,"DD", CutsDef::DDcut, histFile);
+
+
+		/**               GET AND FIT EFFICIENCIES                  **/
+
+		RooAbsPdf * effDDpdf = NULL, * effLLpdf = NULL, * effLLBpdf = NULL, * effDDBpdf = NULL;	
+		getEfficiencies(q2min[i],q2max[i],&effLLpdf,&effDDpdf,&effLLBpdf,&effDDBpdf,printeff);
+
+		cout << "Efficiencies extracted" << endl;
+		histFile->cd();
+
+
+		/**                    FIT AFB                  **/
+
+
+		afb->setVal(0);
+		afbB->setVal(-0.37);
+		fL->setVal(0.6);
+
+		RooAbsPdf * corrPdfLL = new RooProdPdf("sigPdfLL"+q2name,"corrPdfLL",*teoPdf,*effLLpdf);
+		RooAbsPdf * corrPdfDD = new RooProdPdf("sigPdfDD"+q2name,"corrPdfDD",*teoPdf,*effDDpdf);
+		RooAbsPdf * corrPdfLLB = new RooProdPdf("sigPdfLLB"+q2name,"corrPdfLLB",*teoPdfB,*effLLBpdf);
+		RooAbsPdf * corrPdfDDB = new RooProdPdf("sigPdfDDB"+q2name,"corrPdfDDB",*teoPdfB,*effDDBpdf);
+
+		TCut baseCut = "";
+		TCut cutLL = CutsDef::LLcut + (TCut)curq2cut + baseCut;
+		TCut cutDD = CutsDef::DDcut + (TCut)curq2cut + baseCut;
+
+		histFile->cd();
+		double fracDDv[2], fracLLv[2];
+		double nsigDD, nsigLL, slopeLL, slopeDD;
+		RooDataSet * dataLL = getDataAndFrac("LL",q2name,mydata,range,cutLL,MM,&fracLLv[0],&slopeLL,jpsiParsLL,&nsigLL,true);
+		RooDataSet * dataDD = getDataAndFrac("DD",q2name,mydata,range,cutDD,MM,&fracDDv[0],&slopeDD,jpsiParsDD,&nsigDD,true);
+		RooDataSet * sideDataLL = getSideData("LL", q2name, mydata, NULL, cutLL, MM);
+		RooDataSet * sideDataDD = getSideData("DD", q2name, mydata, NULL, cutDD, MM);
+
+
+
+		cout << nsigDD << "   "   << fracDDv[0] << "  " << nsigLL << "   "   << fracLLv[0] << endl;
+
+		//Get mass model	
+		RooRealVar * fracLL = new RooRealVar("fracLL","fracLL",fracLLv[0],0.01,0.99);
+		RooRealVar * fracDD = new RooRealVar("fracDD","fracDD",fracDDv[0],0.01,0.99);
+
+
+		//Get mass model
+		RooAbsPdf * bkgMLL = stringToPdf(Form("Exp-b[%e]",slopeLL),"bkgMLL",MM);
+		RooAbsPdf * bkgMDD = stringToPdf(Form("Exp-b[%e]",slopeDD),"bkgMDD",MM);		
+		RooAbsPdf * sigMLL = stringToPdf("DCB_Sn","sigMLL",MM,jpsiParsLL);
+		RooAbsPdf * sigMDD = stringToPdf("DCB_Sn","sigMDD",MM,jpsiParsDD);
+
+		string bkgmodel = "Poly1-v0-l2";
+		RooAbsPdf * bkgLL_teo = stringToPdf(bkgmodel.c_str(),"bkgLL_teo", cosThetaL);
+		RooAbsPdf * bkgLLB_teo = stringToPdf(bkgmodel.c_str(),"bkgLLB_teo", cosThetaB);
+		RooAbsPdf * bkgDD_teo = stringToPdf(bkgmodel.c_str(),"bkgDD_teo", cosThetaL); 
+		RooAbsPdf * bkgDDB_teo = stringToPdf(bkgmodel.c_str(),"bkgDDB_teo", cosThetaB);
+		RooAbsPdf * bkgLL = new RooProdPdf("bkgLL","",*bkgLL_teo,*effLLpdf);
+		RooAbsPdf * bkgDD = new RooProdPdf("bkgDD","",*bkgDD_teo,*effDDpdf);
+		RooAbsPdf * bkgLLB = new RooProdPdf("bkgLLB","",*bkgLLB_teo,*effLLBpdf);
+		RooAbsPdf * bkgDDB = new RooProdPdf("bkgDDB","",*bkgDDB_teo,*effDDBpdf);
+
+		bkgLL->fitTo(*sideDataLL);
+		bkgLLB->fitTo(*sideDataLL);
+		bkgDD->fitTo(*sideDataDD);
+		bkgDDB->fitTo(*sideDataDD);
+		fixParam(bkgLL,cosThetaL);	
+		fixParam(bkgLLB,cosThetaB);
+		fixParam(bkgDDB,cosThetaB);
+		fixParam(bkgDD,cosThetaL);
+
+		RooAbsPdf * sigLL = new RooProdPdf("totsigLL","",RooArgSet(*corrPdfLL,*sigMLL));
+		RooAbsPdf * sigDD = new RooProdPdf("totsigDD","",RooArgSet(*corrPdfDD,*sigMDD));
+		RooAbsPdf * sigLLB = new RooProdPdf("totsigLLB","",RooArgSet(*corrPdfLLB,*sigMLL));
+		RooAbsPdf * sigDDB = new RooProdPdf("totsigDDB","",RooArgSet(*corrPdfDDB,*sigMDD));
+		RooAbsPdf * totBkgLL = new RooProdPdf("totbkgLL","",RooArgSet(*bkgLL,*bkgMLL));
+		RooAbsPdf * totBkgDD = new RooProdPdf("totbkgDD","",RooArgSet(*bkgDD,*bkgMDD));
+		RooAbsPdf * totBkgLLB = new RooProdPdf("totbkgLLB","",RooArgSet(*bkgLLB,*bkgMLL));
+		RooAbsPdf * totBkgDDB = new RooProdPdf("totbkgDDB","",RooArgSet(*bkgDDB,*bkgMDD));
+		RooAbsPdf * MmodelLL = new RooAddPdf("MassModelLL","MassModel",RooArgSet(*sigMLL,*bkgMLL),*fracLL);
+		RooAbsPdf * MmodelDD = new RooAddPdf("MassModelDD","MassModel",RooArgSet(*sigMDD,*bkgMDD),*fracDD);
+		RooAbsPdf * modelLL = new RooAddPdf("modelLL","modelLL",RooArgSet(*corrPdfLL,*bkgLL),*fracLL);
+		RooAbsPdf * modelDD = new RooAddPdf("modelDD","modelDD",RooArgSet(*corrPdfDD,*bkgDD),*fracDD);
+		RooAbsPdf * modelLLB = new RooAddPdf("modelLLB","modelLLB",RooArgSet(*corrPdfLLB,*bkgLLB),*fracLL);
+		RooAbsPdf * modelDDB = new RooAddPdf("modelDDB","modelDDB",RooArgSet(*corrPdfDDB,*bkgDDB),*fracDD);
+
+		RooGaussian * f_cost_LL = new RooGaussian("f_cost_LL","fLL",*fracLL,RooConst(fracLLv[0]),RooConst(fracLLv[1]/5.));
+		RooGaussian * f_cost_DD = new RooGaussian("f_cost_DD","fDD",*fracDD,RooConst(fracDDv[0]),RooConst(fracDDv[1]/5.));
+		RooArgSet * constraints = new RooArgSet(*f_cost_LL,*f_cost_DD);
+		RooAbsPdf * totPdfLL = new RooProdPdf("totPdfLL","totPdfLL",RooArgSet(*modelLL,*MmodelLL,*f_cost_LL));
+		RooAbsPdf * totPdfLLB = new RooProdPdf("totPdfLLB","totPdfLLB",RooArgSet(*modelLLB,*MmodelLL,*f_cost_LL));
+		RooAbsPdf * totPdfDD = new RooProdPdf("totPdfDD","totPdfDD",RooArgSet(*modelDD,*MmodelDD,*f_cost_DD));
+		RooAbsPdf * totPdfDDB = new RooProdPdf("PdfDDB","totPdfDDB",RooArgSet(*modelDDB,*MmodelDD,*f_cost_DD));
+
+
+
+		// CREATE COMBINED DATASET
+		RooDataSet * combData = new RooDataSet(Form("combData_%i",i),"combined data",
+				RooArgSet(*MM,*cosThetaL,*cosThetaB),Index(*samples),Import("DD",*dataDD),Import("LL",*dataLL));
+
+		Str2VarMap params;
+		params["fL"] = fL;
+		params["afb"] = afb;	
+		Str2VarMap paramsB;
+		paramsB["afbB"] = afbB;
+
+		// FIT COS LEPTON
+		RooSimultaneous * combModel = new RooSimultaneous(Form("combModel_%i",i),"",*samples);
+		combModel->addPdf(*totPdfLL,"LL");
+		combModel->addPdf(*totPdfDD,"DD");
+		
+
+		int leptNfree = getNFreePars(combModel,RooArgSet(*MM,*cosThetaL));
+		safeFit(combModel,combData,params,&isInAllowedArea,"-scan",leptNfree,constraints);	
+		
+		// FIT COS HADRON
+		RooSimultaneous * combModelB = new RooSimultaneous(Form("combModelB_%i",i),"",*samples);
+
+		combModelB->addPdf(*totPdfLLB,"LL");
+		combModelB->addPdf(*totPdfDDB,"DD");
+		
+		int hadNfree = getNFreePars(combModelB,RooArgSet(*MM,*cosThetaB));
+		safeFit(combModelB,combData,paramsB,&isInAllowedAreaB,"-scan",hadNfree,constraints);
+		
+		TCanvas * ceff = new TCanvas();
+		GetFrame(cosThetaL,totPdfLL,dataLL,"-noCost-plotSigComp-fillBkg",8,"cos#theta_{l}")->Draw();
+		ceff->Print("defAfb_LL.pdf");
+		GetFrame(cosThetaL,totPdfDD,dataDD,"-noCost-plotSigComp-fillBkg",10,"cos#theta_{l}")->Draw();
+		ceff->Print("defAfb_DD.pdf");
+
+		GetFrame(MM,totPdfLL,dataLL,"-noCost-fillBkg",30,"m(#Lambda#mu#mu)")->Draw();
+		ceff->Print("defMfit_Afb_LL.pdf");
+		GetFrame(MM,totPdfDD,dataDD,"-noCost-fillBkg",30,"m(#Lambda#mu#mu)")->Draw();
+		ceff->Print("defMfit_Afb_DD.pdf");
+
+		GetFrame(cosThetaB,totPdfLLB,dataLL,"-noCost-plotSigComp-fillBkg",8,"cos#theta_{#Lambda}")->Draw();
+		ceff->Print("defAfbB_LL.pdf");
+		GetFrame(cosThetaB,totPdfDDB,dataDD,"-noCost-plotSigComp-fillBkg",10,"cos#theta_{#Lambda}")->Draw();
+		ceff->Print("defAfbB_DD.pdf");
+		delete ceff;
+
+		cout << endl << fixed << setprecision(6) << "AfbB = " << afbB->getVal() << " +/- " << afbB->getError() << endl;
+		cout << "Afb = " << afb->getVal() << " +/- " << afb->getError() << endl;
+		cout << "fL = " << fL->getVal() << " +/- " << fL->getError() << endl;
+		cout << endl;
+
+		TH1F * fLsys = new TH1F(Form("fLsys_%i",i),"fLsys",100,0,1);
+		TH1F * afbsys = new TH1F(Form("afbsys_%i",i),"afbsys",100,-1,1);
+		TH1F * afbBsys = new TH1F(Form("afbBsys_%i",i),"afbBsys",100,-1,1);
+		TH1F * fLsys_eff = new TH1F(Form("fLsys_eff%i",i),"fLsys",40,-1,1);
+		TH1F * afbsys_eff = new TH1F(Form("afbsys_eff%i",i),"afbsys",40,-1,1);
+		TH1F * afbBsys_eff = new TH1F(Form("afbBsys_eff%i",i),"afbBsys",40,-1,1);
+		TH1F * fLsys_bkg = new TH1F(Form("fLsys_bkg%i",i),"fLsys",40,-1,1);
+		TH1F * afbsys_bkg = new TH1F(Form("afbsys_bkg%i",i),"afbsys",40,-1,1);
+		TH1F * afbBsys_bkg = new TH1F(Form("afbBsys_bkg%i",i),"afbBsys",40,-1,1);
+
+		TRandom3 r(0);
+
+		double origAfb = 0;
+		double origAfbh = -0.37;
+		double origfL = 0.7;
+
+		RooArgSet * setL = new RooArgSet(*cosThetaL);
+		RooArgSet * setB = new RooArgSet(*cosThetaB);
+
+
+		//  Model for eff sys
+		
+			
+		RooAbsPdf * SeffDDpdf = NULL, * SeffLLpdf = NULL, * SeffLLBpdf = NULL, * SeffDDBpdf = NULL;	
+		getEfficiencies(q2min[i],q2max[i],&SeffLLpdf,&SeffDDpdf,&SeffLLBpdf,&SeffDDBpdf,printeff,false);
+		
+		RooAbsPdf * corrPdfLLS = new RooProdPdf("sigPdfLLS"+q2name,"corrPdfLL",*teoPdf,*SeffLLpdf);
+		RooAbsPdf * corrPdfDDS = new RooProdPdf("sigPdfDDS"+q2name,"corrPdfDD",*teoPdf,*SeffDDpdf);
+		RooAbsPdf * corrPdfLLBS = new RooProdPdf("sigPdfLLBS"+q2name,"corrPdfLLB",*teoPdfB,*SeffLLBpdf);
+		RooAbsPdf * corrPdfDDBS = new RooProdPdf("sigPdfDDBS"+q2name,"corrPdfDDB",*teoPdfB,*SeffDDBpdf);
+
+		RooAbsPdf * bkgLLS = new RooProdPdf("bkgLLS","",*bkgLL_teo,*SeffLLpdf);
+		RooAbsPdf * bkgDDS = new RooProdPdf("bkgDDS","",*bkgDD_teo,*SeffDDpdf);
+		RooAbsPdf * bkgLLBS = new RooProdPdf("bkgLLBS","",*bkgLLB_teo,*SeffLLBpdf);
+		RooAbsPdf * bkgDDBS = new RooProdPdf("bkgDDBS","",*bkgDDB_teo,*SeffDDBpdf);
+
+		RooAbsPdf * modelLLS = new RooAddPdf("modelLL_2","modelLL",RooArgSet(*corrPdfLLS,*bkgLLS),*fracLL);
+		RooAbsPdf * modelDDS = new RooAddPdf("modelDD_2","modelDD",RooArgSet(*corrPdfDDS,*bkgDDS),*fracDD);
+		RooAbsPdf * modelLLBS = new RooAddPdf("modelLLB_2","modelLLB",RooArgSet(*corrPdfLLBS,*bkgLLBS),*fracLL);
+		RooAbsPdf * modelDDBS = new RooAddPdf("modelDDB_2","modelDDB",RooArgSet(*corrPdfDDBS,*bkgDDBS),*fracDD);
+
+		RooSimultaneous * combModelBS = new RooSimultaneous(Form("combModelBS_%i",i),"",*samples);
+		combModelBS->addPdf(*modelLLBS,"LL");
+		combModelBS->addPdf(*modelDDBS,"DD");
+		RooSimultaneous * combModelS = new RooSimultaneous(Form("combModelS_%i",i),"",*samples);
+		combModelS->addPdf(*modelLLS,"LL");
+		combModelS->addPdf(*modelDDS,"DD");
+
+
+		//Model for bkg sys
+		
+		string bkgmodel_2 = "Poly0-v0-l2";
+		RooAbsPdf * bkgDD_teo_2 = stringToPdf(bkgmodel_2.c_str(),"bkgDD_teo_2", cosThetaL); 
+		RooAbsPdf * bkgDDB_teo_2 = stringToPdf(bkgmodel_2.c_str(),"bkgDDB_teo_2", cosThetaB);
+		RooAbsPdf * bkgLL_teo_2 = stringToPdf(bkgmodel_2.c_str(),"bkgLL_teo_2", cosThetaL);
+		RooAbsPdf * bkgLLB_teo_2 = stringToPdf(bkgmodel_2.c_str(),"bkgLLB_teo_2", cosThetaB);
+		RooAbsPdf * bkgLL_2 = new RooProdPdf("bkgLL_2","",*bkgLL_teo_2,*effLLpdf);
+		RooAbsPdf * bkgDD_2 = new RooProdPdf("bkgDD_2","",*bkgDD_teo_2,*effDDpdf);
+		RooAbsPdf * bkgLLB_2 = new RooProdPdf("bkgLLB_2","",*bkgLLB_teo_2,*effLLBpdf);
+		RooAbsPdf * bkgDDB_2 = new RooProdPdf("bkgDDB_2","",*bkgDDB_teo_2,*effDDBpdf);
+
+		/*
+		bkgLL_2->fitTo(*sideDataLL);
+		bkgLLB_2->fitTo(*sideDataLL);
+		bkgDD_2->fitTo(*sideDataDD);
+		bkgDDB_2->fitTo(*sideDataDD);
+		fixParam(bkgLL_2,cosThetaL);	
+		fixParam(bkgLLB_2,cosThetaB);
+		fixParam(bkgDDB_2,cosThetaB);
+		fixParam(bkgDD_2,cosThetaL);
+	
+
+		string bkgmodel_2 = "Poly1-v0-l2";
+		RooAbsPdf * bkgDD_2 = stringToPdf(bkgmodel_2.c_str(),"bkgDD_teo_2", cosThetaL); 
+		RooAbsPdf * bkgDDB_2 = stringToPdf(bkgmodel_2.c_str(),"bkgDDB_teo_2", cosThetaB);
+		RooAbsPdf * bkgLL_2 = stringToPdf(bkgmodel_2.c_str(),"bkgLL_teo_2", cosThetaL);
+		RooAbsPdf * bkgLLB_2 = stringToPdf(bkgmodel_2.c_str(),"bkgLLB_teo_2", cosThetaB);
+
+		bkgLL_2->fitTo(*sideDataLL);
+		bkgLLB_2->fitTo(*sideDataLL);
+		bkgDD_2->fitTo(*sideDataDD);
+		bkgDDB_2->fitTo(*sideDataDD);
+		fixParam(bkgLL_2,cosThetaL);	
+		fixParam(bkgLLB_2,cosThetaB);
+		fixParam(bkgDDB_2,cosThetaB);
+		fixParam(bkgDD_2,cosThetaL);
+*/
+
+		RooAbsPdf * modelLL_2 = new RooAddPdf("modelLL_2","model",RooArgSet(*corrPdfDD,*bkgDD_2),*fracDD);
+		RooAbsPdf * modelLLB_2 = new RooAddPdf("modelLLB_2","modelB",RooArgSet(*corrPdfLLB,*bkgLLB_2),*fracLL);
+		RooAbsPdf * modelDD_2 = new RooAddPdf("modelDD_2","model",RooArgSet(*corrPdfLL,*bkgLL_2),*fracLL);
+		RooAbsPdf * modelDDB_2 = new RooAddPdf("modelDDB_2","modelB",RooArgSet(*corrPdfDDB,*bkgDDB_2),*fracDD);
+
+		RooAbsPdf * modelLL_2_cons = new RooProdPdf("modelLL_2_cons","model",RooArgSet(*modelLL_2,*f_cost_LL));
+		RooAbsPdf * modelLLB_2_cons = new RooProdPdf("modelLLB_2_cons","model",RooArgSet(*modelLLB_2,*f_cost_LL));
+		RooAbsPdf * modelDD_2_cons = new RooProdPdf("modelDD_2_cons","model",RooArgSet(*modelDD_2,*f_cost_DD));
+		RooAbsPdf * modelDDB_2_cons = new RooProdPdf("modelDDB_2_cons","model",RooArgSet(*modelDDB_2,*f_cost_DD));
+
+		RooSimultaneous * combModelB_2 = new RooSimultaneous(Form("combModelB_2_%i",i),"",*samples);
+		combModelB_2->addPdf(*modelLLB_2_cons,"LL");
+		combModelB_2->addPdf(*modelDDB_2_cons,"DD");
+		RooSimultaneous * combModel_2 = new RooSimultaneous(Form("combModel_2_%i",i),"",*samples);
+		combModel_2->addPdf(*modelLL_2_cons,"LL");
+		combModel_2->addPdf(*modelDD_2_cons,"DD");
+
+		//fracDD->setConstant();
+		//fracLL->setConstant();
+
+
+
+		for(int e = 0; e < nexp; e++)
+		{
+			showPercentage(e,nexp);
+
+			afb->setVal(origAfb);
+			afbB->setVal(origAfbh);
+			fL->setVal(origfL);
+			fracDD->setVal(fracDDv[0]);
+			fracLL->setVal(fracLLv[0]);
+
+			RooDataSet * toyDataDD = generateDataSet("DD",setL,sigDD,nsigDD*fracDDv[0],totBkgDD,nsigDD*(1.-fracDDv[0]));
+			RooDataSet * toyDataDDB = generateDataSet("DDB",setB,sigDDB,nsigDD*fracDDv[0],totBkgDDB,nsigDD*(1.-fracDDv[0]));
+			RooDataSet * toyDataLL = generateDataSet("LL",setL,sigLL,nsigLL*fracLLv[0],totBkgLL,nsigLL*(1.-fracLLv[0]));
+			RooDataSet * toyDataLLB = generateDataSet("LLB",setB,sigLLB,nsigLL*fracLLv[0],totBkgLLB,nsigLL*(1.-fracLLv[0]));
+
+			RooDataSet * toyData = new RooDataSet(Form("toyData_%i",i),"combined data",
+					RooArgSet(*MM,*cosThetaL),Index(*samples),Import("DD",*toyDataDD),Import("LL",*toyDataLL));
+			RooDataSet * toyDataB = new RooDataSet(Form("toyDataB_%i",i),"combined data",
+					RooArgSet(*MM,*cosThetaB),Index(*samples),Import("DD",*toyDataDDB),Import("LL",*toyDataLLB));
+
+			double def_afb = 0;
+			double def_fL = 0;
+			double def_afbB = 0;
+						
+			afb->setVal(origAfb);
+			afbB->setVal(origAfbh);
+			fL->setVal(origfL);
+			fracDD->setVal(fracDDv[0]);	
+			fracDD->setConstant(false);
+			fracLL->setVal(fracLLv[0]);	
+			fracLL->setConstant(false);
+
+			safeFit(combModel,toyData,params,&isInAllowedArea,"-scan",leptNfree,constraints);
+			safeFit(combModelB,toyDataB,paramsB,&isInAllowedAreaB,"-scan",hadNfree,constraints);
+			def_afb = afb->getVal();
+			def_fL = fL->getVal();
+			def_afbB = afbB->getVal();
+
+			fLsys->Fill(def_fL-origfL);
+			afbsys->Fill(def_afb-origAfb);
+			afbBsys->Fill(def_afbB-origAfbh);
+
+			if(e==0)
+			{	
+				TCanvas * ceff = new TCanvas();
+				GetFrame(cosThetaL,modelLL,toyDataLL,"-noCost-plotSigComp-fillBkg",8,"cos#theta_{l}")->Draw();
+				ceff->Print("Afb_LL.pdf");
+				GetFrame(cosThetaL,modelDD,toyDataDD,"-noCost-plotSigComp-fillBkg",10,"cos#theta_{l}")->Draw();
+				ceff->Print("Afb_DD.pdf");
+
+				//GetFrame(MM,totPdfLL,toyDataLL,"-noCost-fillBkg",30,"m(#Lambda#mu#mu)")->Draw();
+				//ceff->Print("Mfit_Afb_LL.pdf");
+				//GetFrame(MM,totPdfDD,toyDataDD,"-noCost-fillBkg",30,"m(#Lambda#mu#mu)")->Draw();
+				//ceff->Print("Mfit_Afb_DD.pdf");
+
+				GetFrame(cosThetaB,modelLLB,toyDataLLB,"-noCost-plotSigComp-fillBkg",8,"cos#theta_{#Lambda}")->Draw();
+				ceff->Print("AfbB_LL.pdf");
+				GetFrame(cosThetaB,modelDDB,toyDataDDB,"-noCost-plotSigComp-fillBkg",10,"cos#theta_{#Lambda}")->Draw();
+				ceff->Print("AfbB_DD.pdf");
+			}
+			
+
+			if(sys.find("bkg")!=string::npos)
+			{
+				afb->setVal(origAfb);
+				afbB->setVal(origAfbh);
+				fL->setVal(origfL);
+				fracDD->setVal(fracDDv[0]);	
+				fracDD->setConstant(false);
+				fracLL->setVal(fracLLv[0]);
+				fracLL->setConstant(false);
+
+				//GetParam(bkgDD_teo_2,"c0")->setVal(r.Gaus(GetParam(bkgDD_teo,"c0")->getVal(),GetParam(bkgDD_teo,"c0")->getError()));
+				//GetParam(bkgLL_teo_2,"c0")->setVal(r.Gaus(GetParam(bkgLL_teo,"c0")->getVal(),GetParam(bkgLL_teo,"c0")->getError()));
+				//GetParam(bkgDDB_teo_2,"c0")->setVal(r.Gaus(GetParam(bkgDDB_teo,"c0")->getVal(),GetParam(bkgDDB_teo,"c0")->getError()));
+				//GetParam(bkgLLB_teo_2,"c0")->setVal(r.Gaus(GetParam(bkgLLB_teo,"c0")->getVal(),GetParam(bkgLLB_teo,"c0")->getError()));
+
+				safeFit(combModel_2,toyData,params,&isInAllowedArea,"-scan",getNFreePars(combModel_2,RooArgSet(*MM,*cosThetaL)),constraints);
+				safeFit(combModelB_2,toyDataB,paramsB,&isInAllowedAreaB,"-scan",getNFreePars(combModelB_2,RooArgSet(*MM,*cosThetaB)),constraints);
+
+				double bkg_afb = afb->getVal();
+				double bkg_fL = fL->getVal();
+				double bkg_afbB = afbB->getVal();
+
+				fLsys_bkg->Fill(bkg_fL-def_fL);
+				afbsys_bkg->Fill(bkg_afb-def_afb);
+				afbBsys_bkg->Fill(bkg_afbB-def_afbB);
+			}
+			if(sys.find("eff")!=string::npos)
+			{
+				afb->setVal(origAfb);
+				afbB->setVal(origAfbh);
+				fL->setVal(origfL);
+				fracDD->setVal(fracDDv[0]);	
+				fracDD->setConstant(false);
+				fracLL->setVal(fracLLv[0]);
+				fracLL->setConstant(false);
+
+				safeFit(combModelS,toyData,params,&isInAllowedArea,"-scan",getNFreePars(combModelS,RooArgSet(*MM,*cosThetaL)),constraints);
+				safeFit(combModelBS,toyDataB,paramsB,&isInAllowedAreaB,"-scan",getNFreePars(combModelBS,RooArgSet(*MM,*cosThetaB)),constraints);
+
+				double afbv = afb->getVal();
+				double fLv = fL->getVal();
+				double afbBv = afbB->getVal();
+
+				fLsys_eff->Fill(fLv-def_fL);
+				afbsys_eff->Fill(afbv-def_afb);
+				afbBsys_eff->Fill(afbBv-def_afbB);
+			}
+
+			delete toyDataDD;
+			delete toyDataLL;
+			delete toyDataDDB;
+			delete toyDataLLB;
+			delete toyData;
+			delete toyDataB;
+		}
+
+		afbsysh.push_back(afbsys);
+		afbBsysh.push_back(afbBsys);
+		fLsysh.push_back(fLsys);
+		afbsysh_bkg.push_back(afbsys_bkg);
+		afbBsysh_bkg.push_back(afbBsys_bkg);
+		fLsysh_bkg.push_back(fLsys_bkg);
+		afbsysh_eff.push_back(afbsys_eff);
+		afbBsysh_eff.push_back(afbBsys_eff);
+		fLsysh_eff.push_back(fLsys_eff);
+
+		TCanvas * cc = new TCanvas();
+		afbsys->Draw();
+		cc->Print("afb_bias.pdf");
+		afbBsys->Draw();
+		cc->Print("afbB_bias.pdf");
+		fLsys->Draw();
+		cc->Print("fL_bias.pdf");
+		afbsys_bkg->Draw();
+		cc->Print("afb_bkgsys.pdf");
+		afbBsys_bkg->Draw();
+		cc->Print("afbB_bkgsys.pdf");
+		fLsys_bkg->Draw();
+		cc->Print("fL_bkgsys.pdf");
+		afbsys_eff->Draw();
+		cc->Print("afb_effsys.pdf");
+		afbBsys_eff->Draw();
+		cc->Print("afbB_effsys.pdf");
+		fLsys_eff->Draw();
+		cc->Print("fL_effsys.pdf");
+	}
+
+	cout << "#################################################################" << endl;
+
+	cout << "\n\n1D fit bias -----------------------\n" << endl;
+
+	for(size_t q = 0; q < afbsysh.size(); q++)
+	{
+		cout << fixed << setprecision(2) << "-------- Bin " << q2min[start+q] << "-" << q2max[start+q] << endl;
+		cout << fixed << setprecision(5) << "fL sys = " << fLsysh[q]->GetMean() << " +/- " << fLsysh[q]->GetMeanError() << ",   RMS = " << fLsysh[q]->GetRMS() << endl;
+		cout << "Afb sys = " << afbsysh[q]->GetMean() << " +/- " << afbsysh[q]->GetMeanError() << ",   RMS = " << afbsysh[q]->GetRMS() << endl;
+		cout << "AfbB sys = " << afbBsysh[q]->GetMean() << " +/- " << afbBsysh[q]->GetMeanError() << ",   RMS = " << afbBsysh[q]->GetRMS() << endl;
+	}
+
+	cout << "#################################################################" << endl;
+
+	cout << "\n\n1D efficiency -----------------------\n" << endl;
+
+	for(size_t q = 0; q < afbsysh.size(); q++)
+	{
+		cout << fixed << setprecision(2) << "-------- Bin " << q2min[start+q] << "-" << q2max[start+q] << endl;
+		cout << fixed << setprecision(5) << "fL sys = " << fLsysh_eff[q]->GetMean() << " +/- " << fLsysh_eff[q]->GetMeanError() << endl;
+		cout << "Afb sys = " << afbsysh_eff[q]->GetMean() << " +/- " << afbsysh_eff[q]->GetMeanError() << endl;
+		cout << "AfbB sys = " << afbBsysh_eff[q]->GetMean() << " +/- " << afbBsysh_eff[q]->GetMeanError() << endl;
+	}
+	cout << "#################################################################" << endl;
+
+	cout << "\n\n1Dbkg shape -----------------------\n" << endl;
+
+
+	for(size_t q = 0; q < afbsysh.size(); q++)
+	{
+		cout << fixed << setprecision(2) << "-------- Bin " << q2min[start+q] << "-" << q2max[start+q] << endl;
+		cout << fixed << setprecision(5) << "fL sys = " << fLsysh_bkg[q]->GetMean() << " +/- " << fLsysh_bkg[q]->GetMeanError() << endl;
+		cout << "Afb sys = " << afbsysh_bkg[q]->GetMean() << " +/- " << afbsysh_bkg[q]->GetMeanError() << endl;
+		cout << "AfbB sys = " << afbBsysh_bkg[q]->GetMean() << " +/- " << afbBsysh_bkg[q]->GetMeanError() << endl;
+	}
+
+	cout << "#################################################################" << endl;
+}
+	
+	/*
+	cout << "\n\nTotal -----------------------\n" << endl;
+
+	for(size_t q = 0; q < afbsysh.size(); q++)
+	{
+		cout << fixed << setprecision(2) << "-------- Bin " << q2min[start+q] << "-" << q2max[start+q] << endl;
+		cout << fixed << setprecision(5) << "fL sys = " << TMath::Sqrt(TMath::Power(fLsysh_frac[q]->GetMean(),2) + TMath::Power(fLsysh[q]->GetMean(),2) + TMath::Power(fLsysh_bkg[q]->GetMean(),2) + TMath::Power(fLsysh_bkg2[q]->GetMean(),2))   << endl;
+		cout << "Afb sys = " << TMath::Sqrt(TMath::Power(afbsysh_frac[q]->GetMean(),2) + TMath::Power(afbsysh[q]->GetMean(),2) + TMath::Power(afbsysh_bkg[q]->GetMean(),2) + TMath::Power(afbsysh_bkg2[q]->GetMean(),2)) << endl;
+		cout << "AfbB sys = " << TMath::Sqrt(TMath::Power(afbBsysh_frac[q]->GetMean(),2) + TMath::Power(afbBsysh[q]->GetMean(),2) + TMath::Power(afbBsysh_bkg[q]->GetMean(),2) + TMath::Power(afbBsysh_bkg2[q]->GetMean(),2)) << endl;
+	}
+}
+*/
+
+
+/*
+			if(sys.find("2D")!=string::npos || sys.find("twoDsys")!=string::npos)
+			{
+				afb->setVal(origAfb);
+				afbB->setVal(origAfbh);
+				fL->setVal(origfL);
+				fracDD->setVal(fracDDv[0]);	
+				fracDD->setConstant(false);	
+				fracLL->setVal(fracLLv[0]);
+				fracLL->setConstant(false);
+
+				safeFit(combModel,toyData,params,&isInAllowedArea,"-scan",leptNfree,constraints);
+				safeFit(combModelB,toyDataB,paramsB,&isInAllowedAreaB,"-scan",hadNfree,constraints);
+
+				def2_afb = afb->getVal();
+				def2_fL = fL->getVal();
+				def2_afbB = afbB->getVal();
+
+				fLsys->Fill(def2_fL-origfL);
+				afbsys->Fill(def2_afb-origAfb);
+				afbBsys->Fill(def2_afbB-origAfbh);
+
+				if(e==0)
+				{
+					TCanvas * ceff = new TCanvas();
+					GetFrame(cosThetaL,totPdfLL,toyDataLL,"-noCost-plotSigComp-fillBkg",8,"cos#theta_{l}")->Draw();
+					ceff->Print("Afb2d_LL.pdf");
+					GetFrame(cosThetaL,totPdfDD,toyDataDD,"-noCost-plotSigComp-fillBkg",10,"cos#theta_{l}")->Draw();
+					ceff->Print("Afb2d_DD.pdf");
+
+					GetFrame(MM,totPdfLL,toyDataLL,"-noCost-fillBkg",30,"m(#Lambda#mu#mu)")->Draw();
+					ceff->Print("Mfit2d_Afb_LL.pdf");
+					GetFrame(MM,totPdfDD,toyDataDD,"-noCost-fillBkg",30,"m(#Lambda#mu#mu)")->Draw();
+					ceff->Print("Mfit2d_Afb_DD.pdf");
+
+					GetFrame(cosThetaB,totPdfLLB,toyDataLLB,"-noCost-plotSigComp-fillBkg",8,"cos#theta_{#Lambda}")->Draw();
+					ceff->Print("AfbB2d_LL.pdf");
+					GetFrame(cosThetaB,totPdfDDB,toyDataDDB,"-noCost-plotSigComp-fillBkg",10,"cos#theta_{#Lambda}")->Draw();
+					ceff->Print("AfbB2d_DD.pdf");
+				}
+			}
+			
+			   if(sys.find("frac")!=string::npos)
+			   {
+			   afb->setVal(origAfb);
+			   afbB->setVal(origAfbh);
+			   fL->setVal(origfL);
+			   fracDD->setVal(fracDDv[0]);	
+			   fracDD->setConstant();
+			   fracLL->setVal(fracLLv[0]);
+			   fracLL->setConstant();
+
+			   double rdm_fracDD = r.Gaus(fracDDv[0],fracDDv[1]);
+			   double rdm_fracLL = r.Gaus(fracLLv[0],fracLLv[1]);
+			//double rdm_frac = fracDDv[0] + fracDDv[1];
+			RooRealVar * fracDD_2 = new RooRealVar("fracDD_2","fracDD_2",rdm_fracDD);
+			RooRealVar * fracLL_2 = new RooRealVar("fracLL_2","fracLL_2",rdm_fracLL);
+			RooAbsPdf * modelDD_3 = new RooAddPdf("modelDD_3","modelDD",RooArgSet(*corrPdfDD,*bkgDD),*fracDD_2);
+			RooAbsPdf * modelDDB_3 = new RooAddPdf("modelDDB_3","modelDDB",RooArgSet(*corrPdfDDB,*bkgDDB),*fracDD_2);
+			RooAbsPdf * modelLL_3 = new RooAddPdf("modelLL_3","modelLL",RooArgSet(*corrPdfLL,*bkgLL),*fracLL_2);
+			RooAbsPdf * modelLLB_3 = new RooAddPdf("modelLLB_3","modelLLB",RooArgSet(*corrPdfLLB,*bkgLLB),*fracLL_2);
+
+			RooSimultaneous * combModelB_3 = new RooSimultaneous(Form("combModelB_3_%i",i),"",*samples);
+			combModelB_3->addPdf(*modelLLB_3,"LL");
+			combModelB_3->addPdf(*modelDDB_3,"DD");
+			RooSimultaneous * combModel_3 = new RooSimultaneous(Form("combModel_3_%i",i),"",*samples);
+			combModel_3->addPdf(*modelLL_3,"LL");
+			combModel_3->addPdf(*modelDD_3,"DD");
+
+			safeFit(combModel_3,toyData,params,&isInAllowedArea,"-scan",getNFreePars(combModel_3,RooArgSet(*cosThetaL)));
+			safeFit(combModelB_3,toyDataB,paramsB,&isInAllowedAreaB,"-scan",getNFreePars(combModelB_3,RooArgSet(*cosThetaB)));
+
+			double frc_afb = afb->getVal();
+			double frc_fL = fL->getVal();
+			double frc_afbB = afbB->getVal();
+
+			fLsys_frac->Fill(frc_fL-def_fL);
+			afbsys_frac->Fill(frc_afb-def_afb);
+			afbBsys_frac->Fill(frc_afbB-def_afbB);
+			}
+			*/

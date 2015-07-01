@@ -1,0 +1,276 @@
+#include "analyser.hpp"
+#include "TCanvas.h"
+#include "Lb_cuts.hpp"
+#include "TGraphErrors.h"
+#include "RooGenericPdf.h"
+#include "RooMsgService.h"
+#include "RooMinuit.h"
+#include "FeldmanCousins.hpp"
+
+TH1F * Smear( TH1F * h )
+{
+	TH1F * res = (TH1F*)h->Clone();
+	TRandom3 r(0);
+	for(int i = 1; i <= h->GetNbinsX(); i++)
+	{
+		double smv = r.Gaus(h->GetBinContent(i),h->GetBinError(i));
+		res->SetBinContent(i,smv);
+		res->SetBinError(i,h->GetBinError(i));
+	}
+
+	return res;
+}
+
+
+bool isInAllowedArea( Str2VarMap params )
+{
+	double a = params["afb"]->getVal();
+	double f = params["fL"]->getVal();
+	return !((f-1)*3./4. > a || a >  -(f-1)*3./4.);
+}
+
+
+bool isInAllowedAreaB( Str2VarMap params )
+{
+	double a = params["afbB"]->getVal();
+	return (TMath::Abs(a) <= 0.5);
+}
+
+
+
+void getEfficiencies(double q2min, double q2max, RooAbsPdf ** effLLpdf, RooAbsPdf ** effDDpdf, RooAbsPdf ** effLLBpdf, RooAbsPdf ** effDDBpdf, bool printeff = false, double def = true)
+{
+	RooRealVar * cosThetaL = new RooRealVar("cosThetaL","cosThetaL",0.,-1.,1.);
+	RooRealVar * cosThetaB = new RooRealVar("cosThetaB","cosThetaB",0.,-1.,1.);
+
+	TString q2name = ((TString)Form("_q2_%4.2f_%4.2f",q2min,q2max)).ReplaceAll(".","");
+	TString effbase = "/afs/cern.ch/work/p/pluca/results/";
+	TH1F * effDD, * effLL, * effLLB, * effDDB;
+	TString hname1 = "htoteff", hname2 = "htot_eff";
+	TString sname = "";
+	if(!def) { hname1 = "htoteff_rw", hname2 = "htot_eff_rw"; sname = "_rw"; }
+
+
+	if(q2min == 8 && q2max == 11)
+	{
+		q2name = "_jpsi";
+		TFile * effFile = TFile::Open(effbase+"Lbeff_JpsivscosThetaL_DD.root");
+		effDD  = (TH1F *)effFile->Get(hname1);
+		effFile = TFile::Open(effbase+"Lbeff_JpsivscosThetaL_LL.root");
+		effLL  = (TH1F *)effFile->Get(hname1);
+		effFile = TFile::Open(effbase+"Lbeff_JpsivscosThetaB_DD.root");
+		effDDB  = (TH1F *)effFile->Get(hname1);
+		effFile = TFile::Open(effbase+"Lbeff_JpsivscosThetaB_LL.root");
+		effLLB  = (TH1F *)effFile->Get(hname1);
+	}
+	else if((q2min == 15 && q2max == 20) || (q2min == 1.1 && q2max == 6))
+	{
+		TFile * effFile = TFile::Open(effbase+"Lbeff2D_cosThetaL_vs_q2_DD_2bins.root");
+		TH2F * effDD2D  = (TH2F *)effFile->Get(hname2);
+		effDD = (TH1F*)GetSliceX(effDD2D,(q2max+q2min)/2.);
+		effFile = TFile::Open(effbase+"Lbeff2D_cosThetaL_vs_q2_LL_2bins.root");
+		TH2F * effLL2D  = (TH2F *)effFile->Get(hname2);
+		effLL = (TH1F*)GetSliceX(effLL2D,(q2max+q2min)/2.);
+		effFile = TFile::Open(effbase+"Lbeff2D_cosThetaB_vs_q2_DD_2bins.root");
+		TH2F * effDDB2D  = (TH2F *)effFile->Get(hname2);
+		effDDB = (TH1F*)GetSliceX(effDDB2D,(q2max+q2min)/2.);
+		effFile = TFile::Open(effbase+"Lbeff2D_cosThetaB_vs_q2_LL_2bins.root");
+		TH2F * effLLB2D  = (TH2F *)effFile->Get(hname2);
+		effLLB = (TH1F*)GetSliceX(effLLB2D,(q2max+q2min)/2.);
+	}
+	else
+	{
+		TFile * effFile = TFile::Open(effbase+"Lbeff2D_cosThetaL_vs_q2_DD.root");
+		TH2F * effDD2D  = (TH2F *)effFile->Get(hname2);
+		effDD = (TH1F*)GetSliceX(effDD2D,(q2max+q2min)/2.);
+		effFile = TFile::Open(effbase+"Lbeff2D_cosThetaL_vs_q2_LL.root");
+		TH2F * effLL2D  = (TH2F *)effFile->Get(hname2);
+		effLL = (TH1F*)GetSliceX(effLL2D,(q2max+q2min)/2.);
+		effFile = TFile::Open(effbase+"Lbeff2D_cosThetaB_vs_q2_DD.root");
+		TH2F * effDDB2D  = (TH2F *)effFile->Get(hname2);
+		effDDB = (TH1F*)GetSliceX(effDDB2D,(q2max+q2min)/2.);
+		effFile = TFile::Open(effbase+"Lbeff2D_cosThetaB_vs_q2_LL.root");
+		TH2F * effLLB2D  = (TH2F *)effFile->Get(hname1);
+		effLLB = (TH1F*)GetSliceX(effLLB2D,(q2max+q2min)/2.);
+	}
+
+	RooDataHist * hLL = new RooDataHist("hLL"+sname,"hLL",*cosThetaL,effLL);
+	RooDataHist * hDD = new RooDataHist("hDD"+sname,"hDD",*cosThetaL,effDD);
+	(*effLLpdf) = stringToPdf("Poly1-v0-l1","effLL"+sname, cosThetaL);
+	(*effDDpdf) = stringToPdf("Poly2-v0-l1","effDD"+sname, cosThetaL);
+	(*effLLpdf)->fitTo(*hLL,PrintLevel(-1));
+	(*effDDpdf)->fitTo(*hDD,PrintLevel(-1));
+	fixParams((*effLLpdf),cosThetaL);
+	fixParams((*effDDpdf),cosThetaL);	
+
+	RooDataHist * hLLB = new RooDataHist("hLLB"+sname,"hLLB",*cosThetaB,effLLB);
+	RooDataHist * hDDB = new RooDataHist("hDDB"+sname,"hDDB",*cosThetaB,effDDB);
+	(*effLLBpdf) = stringToPdf("Poly1-v-0.2-l1","effLLB"+sname, cosThetaB);
+	(*effDDBpdf) = stringToPdf("Poly2-v-0.2-l1","effDDB"+sname, cosThetaB);
+	(*effLLBpdf)->fitTo(*hLLB,PrintLevel(-1));
+	(*effDDBpdf)->fitTo(*hDDB,PrintLevel(-1));
+	fixParams((*effLLBpdf),cosThetaB);
+	fixParams((*effDDBpdf),cosThetaB);
+
+	if(printeff)
+	{
+		TCanvas * ceff = new TCanvas();
+		GetFrame(cosThetaL, hLL,(*effLLpdf),"-nochi2",0,NULL,0,"cos#theta_{l}","Tot. eff.")->Draw();
+		ceff->Print("LLeffFit"+q2name+".pdf");
+		GetFrame(cosThetaL, hDD,(*effDDpdf),"-nochi2",0,NULL,0,"cos#theta_{l}","Tot. eff.")->Draw();
+		ceff->Print("DDeffFit"+q2name+".pdf");
+		GetFrame(cosThetaB, hDDB,(*effDDBpdf),"-nochi2",0,NULL,0,"cos#theta_{#Lambda}","Tot. eff.")->Draw();
+		ceff->Print("DDeffFitB"+q2name+".pdf");
+		GetFrame(cosThetaB, hLLB,(*effLLBpdf),"-nochi2",0,NULL,0,"cos#theta_{#Lambda}","Tot. eff.")->Draw();
+		ceff->Print("LLeffFitB"+q2name+".pdf");
+		delete ceff;
+	}
+}
+
+
+
+
+int main(int argc, char **argv)
+{
+	TString var = "cosThetaL";
+	TString type = "All";
+	string systype = "";
+
+	if(argc > 1)
+	{
+		for(int a = 1; a < argc; a++)
+		{
+			string arg = argv[a];
+			string str = arg.substr(2,arg.length()-2);
+
+			if(arg.find("-t") != string::npos) type = (TString)str;
+			if(arg.find("-v") != string::npos) var = (TString)str;
+			if(arg == "flucteff" || arg == "effsymm") systype = arg;
+		}
+	}
+
+
+	TCut baseCut = "";
+	if(type == "DD") { baseCut = CutsDef::DDcut; }
+	else if(type == "LL") { baseCut = CutsDef::LLcut; }
+
+	TString q2str = "TMath::Power(J_psi_1S_MM/1000,2)";
+	int q2nbins = 5;
+	double q2min[] = {15.0, 11.0, 15.0, 16.0, 18.0};
+	double q2max[] = {20.0, 12.5, 16.0, 18.0, 20.0};
+	double nevts[] = {200., 34., 41., 88., 72. };
+	double fbkg[] = {200., 34., 41., 88., 72. };
+
+	if(systype != "flucteff") q2nbins = 1; 
+	vector <double> sys, fLsys;
+
+	RooMsgService::instance().setGlobalKillBelow(RooFit::ERROR);
+
+	for(int q2 = 1; q2 < q2nbins; q2++)
+	{
+		TString q2name = ((TString)Form("q2_%4.2f_%4.2f",q2min[q2],q2max[q2])).ReplaceAll(".","");	
+
+		RooRealVar * cosThetaL = new RooRealVar("cosThetaL","cosThetaL",0.,-1.,1.);
+		RooRealVar * cosThetaB = new RooRealVar("cosThetaB","cosThetaB",0.,-1.,1.);
+
+		RooAbsPdf * effDD = NULL, * effLL = NULL, * effLLB = NULL, * effDDB = NULL;	
+		RooAbsPdf * effDDs = NULL, * effLLs = NULL, * effLLBs = NULL, * effDDBs = NULL;
+		getEfficiencies(q2min[i],q2max[i],&effLL,&effDD,&effLLB,&effDDB,false);
+		getEfficiencies(q2min[i],q2max[i],&effLLs,&effDDs,&effLLBs,&effDDBs,false,false);
+
+		Analysis * normal; 
+		RooRealVar * afb = new RooRealVar("afb","afb",0.04,-0.75,0.75);
+		RooRealVar * fL = new RooRealVar("fL","fL",0.82,0.,1.);
+		TString afbpdf = "((3./8.)*(1.-fL)*(1 + TMath::Power(cosThetaL,2)) + afb*cosThetaL + (3./4.)*fL*(1 - TMath::Power(cosThetaL,2)))";
+		RooRealVar * afbB = new RooRealVar("afbB","afbB",-0.37,-1.,1.);
+		TString afbBpdf = "(1 + 2*afbB*cosThetaB)";
+		Analysis::SetPrintLevel("s");
+
+		TH1F * hsys = new TH1F("hsys"+q2name,"",20,-0.5,0.5); 	
+		TH1F * hfLsys = new TH1F("hfLsys"+q2name,"",20,-0.5,0.5);
+
+		Str2VarMap params;
+		params["fL"] = fL;
+		params["afb"] = afb;	
+		Str2VarMap paramsB;
+		paramsB["afbB"] = afbB;
+
+
+		for(int e = 0; e < 1000; e++)
+		{
+			showPercentage(e,1000);
+			RooAbsPdf * corrPdf, * pdf, * corrPdfs, * bkgDD_teo, * bkgDD, * bkgDDs, * modelDD, * modelDDs;
+			RooRealVar * fracDD = new RooRealVar("fracDD","fracDD",fbkg[q2]);
+			string bkgmodel = Form("Poly%i-v0-l2",gradbkg);
+
+			if(var=="cosThetaL")
+			{
+				pdf = new RooGenericPdf(Form("pdf_%i_",e),afbpdf,RooArgSet(*cosThetaL, *afb, *fL) );
+				bkg_teo = stringToPdf(bkgmodel.c_str(),"bkg_teo", cosThetaL);
+				normal = new Analysis(Form("normal_%i",e),cosThetaL);
+
+			}
+			else
+			{
+				pdf = new RooGenericPdf(Form("pdfB_%i_",e),afbBpdf,RooArgSet(*cosThetaB, *afbB) );
+				bkg_teo = stringToPdf(bkgmodel.c_str(),"bkg_teo", cosThetaB);
+				normal = new Analysis(Form("normal_%i",e),cosThetaB);
+			}
+
+			corrPdf = new RooProdPdf(Form("corrPdf_%i",e),*pdf,*effDD);
+			corrPdfs = new RooProdPdf(Form("corrPdfs_%i",e),*pdf,*effDDs);
+
+			bkg = new RooProdPdf("bkg","",*bkg_teo,*effDD);
+			bkgs = new RooProdPdf("bkgs","",*bkg_teo,*effDDs);
+
+			model = new RooAddPdf("model","model",RooArgSet(*corrPdf,*bkg),*fracDD);
+			models = new RooAddPdf("models","models",RooArgSet(*corrPdfs,*bkgs),*fracDD);
+
+
+			afb->setVal(0.);
+			afbB->setVal(-0.37);
+			fL->setVal(0.8);
+
+			normal->SetModel(model);
+			normal->Generate(nevts[q2]/fbkg[q2]);
+
+			afb->setVal(0.);
+			afbB->setVal(-0.37);
+			fL->setVal(0.8);
+
+			if(var=="cosThetaL") safeFit(model,(normal->GetDataSet()),params,&isInAllowedArea);
+			else safeFit(model,(normal->GetDataSet()),paramsB,&isInAllowedAreaB);
+
+			double norm_val, noeff_val, norm_fLval = 0, noeff_fLval = 0;
+			if(var=="cosThetaL") norm_val = afb->getVal(); norm_fLval = fL->getVal(); }
+			else norm_val = afbB->getVal();
+
+			afb->setVal(0.);
+			afbB->setVal(-0.37);
+			fL->setVal(0.8);
+
+			if(var=="cosThetaL") safeFit(models,(normal->GetDataSet()),params,&isInAllowedArea);
+			else safeFit(models,(normal->GetDataSet()),paramsB,&isInAllowedAreaB);
+
+			if(var=="cosThetaL") { noeff_val = afb->getVal(); noeff_fLval = fL->getVal(); }
+			else noeff_val = afbB->getVal();
+
+			double rel_dev = norm_val - noeff_val;
+			hsys->Fill(rel_dev);
+			if(var=="cosThetaL") hfLsys->Fill(norm_fLval - noeff_fLval);
+	}
+
+
+	sys.push_back(hsys->GetMean());
+	if(var=="cosThetaL") fLsys.push_back(hfLsys->GetMean());
+}
+
+cout << fixed << setprecision(5);
+
+for(int q2 = 0; q2 < q2nbins; q2++)
+{
+	if(var=="cosThetaL") cout << sys[q2] << " & " << fLsys[q2]  << endl;
+	else cout << sys[q2] << endl;
+}
+
+}

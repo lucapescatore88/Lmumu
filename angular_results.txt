@@ -1,0 +1,42 @@
+
+\begin{table}[h!]
+\centering
+\begin{tabular}{c|c|c}
+ \qsq bin   &            $A_{FB}^\ell$                                            &       $f_{L}$                     \\ \hline
+0.1  - 2.0  & $0.3710_{-0.475}^{+0.370}    \text{(stat)} \pm  0.017 \text{(sys)}$  & $0.559_{-0.559}^{+0.231}  \text{(stat)} \pm 0.080 \text{(sys)}$ \\
+11.0 - 12.5 & $0.0083_{-0.1807}^{+0.1944}  \text{(stat)} \pm  0.046 \text{(sys)}$  & $0.398_{-0.359}^{+0.366}  \text{(stat)} \pm 0.053 \text{(sys)}$ \\
+15.0 - 16.0 & $-0.1027_{-0.1649}^{+0.1821} \text{(stat)} \pm  0.012 \text{(sys)}$  & $0.491_{-0.301}^{+0.305}  \text{(stat)} \pm 0.041 \text{(sys)}$ \\
+16.0 - 18.0 & $-0.0675_{-0.1178}^{+0.1312} \text{(stat)} \pm  0.028 \text{(sys)}$  & $0.683_{-0.210}^{+0.148}  \text{(stat)} \pm 0.041 \text{(sys)}$ \\
+18.0 - 20.0 & $0.00675_{-0.143}^{+0.1459}  \text{(stat)} \pm  0.012 \text{(sys)}$  & $0.620_{-0.271}^{+0.243}  \text{(stat)} \pm 0.036 \text{(sys)}$ \\
+\hline
+15.0 - 20.0 & $-0.048_{-0.086}^{+0.086}    \text{(stat)} \pm  0.009 \text{(sys)}$  & $0.612_{-0.138}^{+0.108}  \text{(stat)} \pm 0.023 \text{(sys)}$ \\
+\end{tabular}
+\caption{ Measured values of lepton side angular observables with systematic errors.
+The statistical errors are reported in Fig.\ref{fig:contours} evaluated as 2D 68\% confindence regions.
+Errors reported on this table are estimations obtained using the Feldman-Cousins method where
+one only of the two observables is treated as parameter of interest at a time.}
+\label{tab:afblresults}
+\end{table}
+
+
+\begin{table}[h!]
+\centering
+\begin{tabular}{c|c}
+ \qsq bin    &             $A_{FB}^h$                    \\ \hline
+
+0.1  - 2.0   & $-0.116_{-0.284}^{+0.308} \text{(stat)} \pm 0.150 \text{(sys)}$   \\ 
+11.0 - 12.5  & $-0.500_{0.000}^{+0.104} \text{(stat)}  \pm 0.042 \text{(sys)}$   \\
+15.0 - 16.0  & $-0.188_{-0.161}^{+0.139} \text{(stat)} \pm 0.029 \text{(sys)}$   \\
+16.0 - 18.0  & $-0.437_{-0.052}^{+0.096} \text{(stat)} \pm 0.028 \text{(sys)}$   \\
+18.0 - 20.0  & $-0.128_{-0.124}^{+0.094} \text{(stat)} \pm 0.029 \text{(sys)}$   \\
+\hline
+15.0 - 20.0  & $-0.289_{-0.071}^{+0.070} \text{(stat)} \pm 0.022 \text{(sys)}$   \\
+\hline
+
+\end{tabular}
+\caption{ Measured values of $A_{FB}^h$ observable with statistical errors, showing 68\% CL interval, and systematic errors. }
+\label{tab:afbhresults}
+\end{table}
+
+
+

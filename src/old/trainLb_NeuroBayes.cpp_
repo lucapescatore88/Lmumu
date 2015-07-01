@@ -1,0 +1,148 @@
+#include "TMath.h"
+#include "TFile.h"
+#include "TTree.h"
+#include "TChain.h"
+#include "TBranch.h"
+#include "TLeaf.h"
+#include "TLorentzVector.h"
+#include "TCanvas.h"
+#include "TH1F.h"
+#include "TRandom3.h"
+
+#include "NeuroBayesTeacher.hh"
+#include "NeuroBayesExpert.hh"
+
+#include <iostream>
+#include <string>
+
+#include "NBfunctions.hpp"
+#include "ReadTree_comp.hpp"
+#include "general_functions.hpp"
+
+
+int main(int argc, char** argv)
+{
+	string dataType = "12";
+	if(argc > 1) if((string)argv[1] == "11") dataType = "11";
+	
+	NeuroBayesTeacher* nb = NeuroBayesTeacher::Instance();
+	
+	nb->NB_DEF_TASK("CLASSIFICATION");
+	
+	//setup network topology
+	int nvar = 25;  // Set this to number of inputs to your NN
+	// Set list of chars with names of inputs (this is for your convenience later)
+	char *varnames[]={ "chi2_DTF", "Lb_TAU",  "Lb_P", "Lb_PT", "pi_PT", "proton_PT", "Lb_DIRA_OWNPV", "Lb_FDCHI2_OWNPV", "Lb_ENDVERTEX_CHI2NDF", "Jpsi_ENDVERTEX_CHI2NDF", "Lb_IPCHI2_OWNPV", "Jpsi_IPCHI2_OWNPV", "proton_IPCHI2_OWNPV", "pi_IPCHI2_OWNPV", "min_mu_IPCHI2_OWNPV","max_mu_IPCHI2_OWNPV", "min_mu_TRACKCHI2","max_mu_TRACKCHI2", "max_mu_PID", "min_mu_PID","LL_Lambda0_PT", "LL_Lambda0_ENDVERTEX_CHI2NDF", "LL_Lambda0_IPCHI2_OWNPV", "LL_Lambda0_FDCHI2_OWNPV", "DD_Lambda0_PT", "DD_Lambda0_ENDVERTEX_CHI2NDF", "DD_Lambda0_IPCHI2_OWNPV", "DD_Lambda0_FDCHI2_OWNPV" };
+	nb->NB_DEF_NODE1(nvar+1);
+	nb->NB_DEF_NODE2(nvar);      // nodes in hidden layer 
+	nb->NB_DEF_NODE3(1);       // nodes in output layer
+
+	nb->NB_DEF_TASK("CLA");    // binominal classification
+
+	nb->NB_DEF_PRE(822);
+	//  nb->NB_DEF_PRE(812);
+	nb->NB_DEF_REG("REG");           // 'OFF','REG' (def) ,'ARD','ASR','ALL'
+	nb->NB_DEF_LOSS("ENTROPY");      // 'ENTROPY'(def),'QUADRATIC'
+	nb->NB_DEF_METHOD("BFGS");
+	nb->NB_DEF_SHAPE("DIAG");
+	nb->NB_DEF_LEARNDIAG(1);
+
+	nb->NB_DEF_RTRAIN(1.0);          // use 70% of events for training
+	//  nb->NB_DEF_EPOCH(200);           // weight update after n events
+
+	nb->NB_DEF_SPEED(2.0);           // multiplicative factor to enhance global learning speed
+	nb->NB_DEF_MAXLEARN(1.0);        // multiplicative factor to limit the global learning speed in any direction, this number should be smaller than NB_DEF_SPEED
+
+	nb->NB_DEF_ITER(100);             // number of training iteration
+	//nb->NB_DEF_ITER(0);             // number of training iteration
+
+        //int i = 4701;
+	//int j = 29; 
+	//nb->NB_RANVIN(i,j,2);            // random number seed initialisation, i has to be an odd number, the third argument is a debugging flag
+
+	nb->SetOutputFile(("expert_"+dataType+".nb").c_str());  // expert file
+	SetupNNPrepro(nb);
+	
+	// MC
+	TreeReader* reader = new TreeReader("Lb2Lmumu_Tuple/DecayTree");
+	reader->AddFile(("rfio:///castor/cern.ch/user/p/pluca/Lmumu/Lb2Lmumu_MC"+dataType+"_Strip20_Pythia6_MagUp.root").c_str());
+	reader->AddFile(("rfio:///castor/cern.ch/user/p/pluca/Lmumu/Lb2Lmumu_MC"+dataType+"_Strip20_Pythia6_MagDown.root").c_str());
+	reader->Initialize();
+
+	
+	// We take all signal and 20% of background
+	
+	nb->SetTarget(1);
+	int ntot = reader->GetEntries();
+	int npassedMC = 0;
+	
+	cout << "Read in " << ntot << " events" << endl;
+	
+	int nstepMC = 5;
+	if(dataType=="11") nstepMC = 5;
+	
+	for(int event = 0; event < ntot; event+=nstepMC)
+	{
+		float InputArray[100];
+		reader->GetEntry(event);
+		
+		if( TrueID(reader) )
+		{
+			npassedMC++;
+			
+			fillInputArray(reader,InputArray);
+			if(isnan(InputArray[0])) continue;
+			
+			nb->SetNextInput(nvar,InputArray);
+		}
+	}
+
+
+	// Data
+	TreeReader* reader2 = new TreeReader("Lb2Lmumu_Tuple/DecayTree");
+	reader2->AddFile(("rfio:///castor/cern.ch/user/p/pluca/Lmumu/Lb2Lmumu_CL"+dataType+"_MagUp.root").c_str());
+	reader2->AddFile(("rfio:///castor/cern.ch/user/p/pluca/Lmumu/Lb2Lmumu_CL"+dataType+"_MagDown.root").c_str());
+	reader2->Initialize();
+	
+
+	nb->SetTarget(0);
+	int ntot2 = reader2->GetEntries();
+	int npassed = 0;
+	
+	cout << "Read in " << ntot2 << " events" << endl;
+	int nstep = 2;
+	if(dataType=="11") nstep = 1;
+	
+	for (int event = 0; event < ntot2; event+=nstep)
+	{
+		float InputArray[100];
+		reader2->GetEntry(event);
+		
+		double massLb = reader2->GetValue("Lb_MassConsLambda_M",0);
+		if(massLb > 6000)
+		{
+			npassed++;
+			
+			fillInputArray(reader2,InputArray);
+			if(isnan(InputArray[0])) continue;
+		//	nb->SetWeight(sWeight);
+			nb->SetNextInput(nvar,InputArray);
+		}
+	}
+	
+	cout << "\nData used = " << npassed << ", MC used = " << npassedMC << endl;
+	
+	cout << "Train the Network\n" << endl;
+	nb->TrainNet();
+	nb->nb_correl_signi(varnames,"correl_signi.txt","correl_signi.html");
+
+	cout << "\nData used = " << npassed << ", MC used = " << npassedMC << endl;
+	
+	return 0;
+}
+
+
+
+
+
+
